@@ -1,0 +1,53 @@
+# Gradle / Android build output
+.gradle/
+build/
+**/build/
+app/.cxx/
+.externalNativeBuild/
+.kotlin/
+
+# Local machine config
+local.properties
+*.iml
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.env
+.env.*
+
+# Build artifacts
+*.apk
+*.aab
+*.apks
+*.idsig
+*.hprof
+*.7z
+
+# Local model cache and bundled model assets.
+# Keep model binaries out of GitHub; use scripts/sync-models.ps1 before full offline builds.
+models/**
+!models/
+!models/README.md
+app/src/main/assets/models/**
+!app/src/main/assets/models/
+!app/src/main/assets/models/README.md
+
+# Signing material / store metadata
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+play-store/
+
+# Runtime/debug output
+captures/
+*.log
+*.tmp
+temp/
+tmp/
+ui_*.png
+window*.xml
+*_result_latest.json
+*dump*.json
+*dump*.txt

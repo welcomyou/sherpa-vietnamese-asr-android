@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "asset_root": "app/src/main/assets",
+  "local_model_root": "models",
+  "notes": [
+    "Model binaries are intentionally not committed.",
+    "Use scripts/sync-models.ps1 to copy local models into app/src/main/assets/models before building a full offline APK.",
+    "Use scripts/sync-models.ps1 -DownloadMissing to download public files. Some Pyannote files may require accepting upstream terms and setting HF_TOKEN."
+  ],
+  "files": [
+    {
+      "id": "asr68.encoder",
+      "target_path": "models/sherpa-onnx-zipformer-vi-2025-04-20/encoder-epoch-12-avg-8.onnx",
+      "repo": "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20",
+      "path": "encoder-epoch-12-avg-8.onnx",
+      "bytes": 261057692,
+      "license": "See upstream model card",
+      "sha256": "d56645616305ceee63a1fa63a4da32e688130e937e67b11f69adf79712377717",
+      "revision": "0fc3fea3ccd9c50b439755fa8a6aba546cb3a7d4"
+    },
+    {
+      "id": "asr68.decoder",
+      "target_path": "models/sherpa-onnx-zipformer-vi-2025-04-20/decoder-epoch-12-avg-8.onnx",
+      "repo": "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20",
+      "path": "decoder-epoch-12-avg-8.onnx",
+      "bytes": 5165084,
+      "license": "See upstream model card",
+      "sha256": "d1d27cca84c824a8acf5ce6edf0f2c0880cfe295d2e69b95134de1707e1d9998",
+      "revision": "0fc3fea3ccd9c50b439755fa8a6aba546cb3a7d4"
+    },
+    {
+      "id": "asr68.joiner",
+      "target_path": "models/sherpa-onnx-zipformer-vi-2025-04-20/joiner-epoch-12-avg-8.onnx",
+      "repo": "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20",
+      "path": "joiner-epoch-12-avg-8.onnx",
+      "bytes": 4104465,
+      "license": "See upstream model card",
+      "sha256": "a186d4ddf04cac3ddfb095dc6e7f705dcd08bd79d4c67334f43c3a7337bf8d9a",
+      "revision": "0fc3fea3ccd9c50b439755fa8a6aba546cb3a7d4"
+    },
+    {
+      "id": "asr68.tokens",
+      "target_path": "models/sherpa-onnx-zipformer-vi-2025-04-20/tokens.txt",
+      "repo": "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20",
+      "path": "tokens.txt",
+      "bytes": 25847,
+      "license": "See upstream model card",
+      "sha256": "f536d03c2e95ebd2930cf0abec88e823bd17d3c1933da7ae6a82db3b80605e15",
+      "revision": "0fc3fea3ccd9c50b439755fa8a6aba546cb3a7d4"
+    },
+    {
+      "id": "asr68.bpe_vocab",
+      "target_path": "models/sherpa-onnx-zipformer-vi-2025-04-20/bpe.vocab",
+      "repo": "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20",
+      "path": "bpe.vocab",
+      "bytes": 57006,
+      "license": "See upstream model card",
+      "sha256": "897e0c58b262e59ad0b4ad6aedf50d6c309b2724b7db32a1f72ee978cec5b794",
+      "revision": "0fc3fea3ccd9c50b439755fa8a6aba546cb3a7d4"
+    },
+    {
+      "id": "asr68.bpe_model",
+      "target_path": "models/sherpa-onnx-zipformer-vi-2025-04-20/bpe.model",
+      "repo": "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20",
+      "path": "bpe.model",
+      "bytes": 270695,
+      "license": "See upstream model card",
+      "sha256": "289dbb44527c13c419ae3a4d8ce6a349f01a97f8777e69934a77e3692d2f10db",
+      "revision": "0fc3fea3ccd9c50b439755fa8a6aba546cb3a7d4"
+    },
+    {
+      "id": "vad.silero",
+      "target_path": "models/silero-vad/silero_vad_16k_op15.onnx",
+      "repo": "snakers4/silero-vad",
+      "path": "files/silero_vad_16k_op15.onnx",
+      "bytes": 1289603,
+      "license": "See upstream model card",
+      "sha256": "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49"
+    },
+    {
+      "id": "speaker.campp",
+      "target_path": "models/campp-3dspeaker/campplus_cn_en_common_200k.onnx",
+      "repo": "welcomyou/campplus-3dspeaker-200k-onnx",
+      "path": "campplus_cn_en_common_200k.onnx",
+      "bytes": 28283928,
+      "license": "Apache-2.0",
+      "sha256": "dd1740aa1e1ffa3895f96aef2166b8af2bb2ad09c00769dd275ee36aef6a2a7f",
+      "revision": "6265ff7af2a104d745b4389026ed9815c6c1c6ff"
+    },
+    {
+      "id": "quality.dnsmos",
+      "target_path": "models/dnsmos/sig_bak_ovr.onnx",
+      "url": "https://github.com/microsoft/DNS-Challenge/raw/master/DNSMOS/DNSMOS/sig_bak_ovr.onnx",
+      "bytes": 1157965,
+      "sha256": "269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd",
+      "license": "See Microsoft DNS-Challenge repository"
+    },
+    {
+      "id": "punct.vibert_fp32",
+      "target_path": "models/vibert-capu/vibert-capu.onnx",
+      "repo": "welcomyou/vibert-capu-onnx",
+      "path": "vibert-capu.onnx",
+      "bytes": 459449409,
+      "license": "CC-BY-SA-4.0",
+      "sha256": "269a59c50977cef010292b1530a77df3073420ff6be409c1a55eeb77a8444e44",
+      "revision": "a7754d037f4a9e29f7f3224f27acb60149eab874"
+    },
+    {
+      "id": "punct.vocab",
+      "target_path": "models/vibert-capu/vocab.txt",
+      "repo": "welcomyou/vibert-capu-onnx",
+      "path": "vocab.txt",
+      "bytes": 254703,
+      "license": "CC-BY-SA-4.0",
+      "sha256": "b32ccb4ca8bee5eda7a0f55f7adebaa515be742c9f765151ffefcd29fcb542a1",
+      "revision": "a7754d037f4a9e29f7f3224f27acb60149eab874"
+    },
+    {
+      "id": "punct.labels",
+      "target_path": "models/vibert-capu/vocabulary/labels.txt",
+      "repo": "welcomyou/vibert-capu-onnx",
+      "path": "vocabulary/labels.txt",
+      "bytes": 248,
+      "license": "CC-BY-SA-4.0",
+      "sha256": "a31075cfa185b5d24c3b65c009ad0740636b286090f78419eaba2d34202c2b45",
+      "revision": "a7754d037f4a9e29f7f3224f27acb60149eab874"
+    },
+    {
+      "id": "punct.d_tags",
+      "target_path": "models/vibert-capu/vocabulary/d_tags.txt",
+      "repo": "welcomyou/vibert-capu-onnx",
+      "path": "vocabulary/d_tags.txt",
+      "bytes": 42,
+      "license": "CC-BY-SA-4.0",
+      "sha256": "926596d65d7b928a3d4dfb553c0cd2a8189f8f2ca7cb0ba26cfbb935b5c5dfad",
+      "revision": "a7754d037f4a9e29f7f3224f27acb60149eab874"
+    },
+    {
+      "id": "punct.non_padded_namespaces",
+      "target_path": "models/vibert-capu/vocabulary/non_padded_namespaces.txt",
+      "repo": "welcomyou/vibert-capu-onnx",
+      "path": "vocabulary/non_padded_namespaces.txt",
+      "bytes": 14,
+      "license": "CC-BY-SA-4.0",
+      "sha256": "863044919d9f9c1c04aba282ac981ab0157d6ab08737a96c72f7e15887911db0",
+      "revision": "a7754d037f4a9e29f7f3224f27acb60149eab874"
+    },
+    {
+      "id": "speaker.pyannote_seg",
+      "target_path": "models/pyannote-onnx/segmentation-community-1.onnx",
+      "repo": "welcomyou/pyannote-community-1-onnx-split",
+      "path": "segmentation-community-1.onnx",
+      "bytes": 5916375,
+      "license": "CC-BY-4.0",
+      "sha256": "62d59a487d8ba877d0bd1638c53aa06a810bdb104fb776a27ec2204521711006",
+      "revision": "cde44c2db938c8abb755853b9a87cb3179c47803"
+    },
+    {
+      "id": "speaker.pyannote_embedding_encoder",
+      "target_path": "models/pyannote-onnx/embedding_encoder.onnx",
+      "repo": "welcomyou/pyannote-community-1-onnx-split",
+      "path": "embedding_encoder.onnx",
+      "bytes": 21306024,
+      "license": "CC-BY-4.0",
+      "sha256": "9903474d6230e5e858dc6b6382a0e3f6e402ea9b4210e1e2f2bee60a33830e7a",
+      "revision": "cde44c2db938c8abb755853b9a87cb3179c47803"
+    },
+    {
+      "id": "speaker.pyannote_resnet_weight",
+      "target_path": "models/pyannote-onnx/resnet_seg_1_weight.npy",
+      "repo": "welcomyou/pyannote-community-1-onnx-split",
+      "path": "resnet_seg_1_weight.npy",
+      "bytes": 5243008,
+      "license": "CC-BY-4.0",
+      "sha256": "ca91250bb69bea25bdc7c710e253a74450a415b3da587e53e04fd5a01abbe4da",
+      "revision": "cde44c2db938c8abb755853b9a87cb3179c47803"
+    },
+    {
+      "id": "speaker.pyannote_resnet_bias",
+      "target_path": "models/pyannote-onnx/resnet_seg_1_bias.npy",
+      "repo": "welcomyou/pyannote-community-1-onnx-split",
+      "path": "resnet_seg_1_bias.npy",
+      "bytes": 1152,
+      "license": "CC-BY-4.0",
+      "sha256": "51fcb6d0530993ad044a797310f4bfd6af266af0dbf364f6bc0008fdd63520cd",
+      "revision": "cde44c2db938c8abb755853b9a87cb3179c47803"
+    },
+    {
+      "id": "speaker.pyannote_plda",
+      "target_path": "models/pyannote/speaker-diarization-community-1/plda/plda.npz",
+      "repo": "pyannote/speaker-diarization-community-1",
+      "path": "plda/plda.npz",
+      "bytes": 133852,
+      "license": "See upstream model card; may require accepting terms",
+      "sha256": "9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255",
+      "revision": "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
+    },
+    {
+      "id": "speaker.pyannote_xvec_transform",
+      "target_path": "models/pyannote/speaker-diarization-community-1/plda/xvec_transform.npz",
+      "repo": "pyannote/speaker-diarization-community-1",
+      "path": "plda/xvec_transform.npz",
+      "bytes": 134376,
+      "license": "See upstream model card; may require accepting terms",
+      "sha256": "325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f",
+      "revision": "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
+    },
+    {
+      "id": "speaker.pyannote_plda_prepared",
+      "target_path": "models/pyannote/speaker-diarization-community-1/plda/plda_prepared.npz",
+      "generated_from": [
+        "speaker.pyannote_plda",
+        "speaker.pyannote_xvec_transform"
+      ],
+      "bytes": 0,
+      "license": "Generated locally from Pyannote PLDA assets; same upstream terms apply"
+    }
+  ]
+}

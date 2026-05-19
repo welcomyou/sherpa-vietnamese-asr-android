@@ -1,0 +1,12 @@
+* text=auto
+
+*.png binary
+*.jar binary
+*.onnx binary
+*.npz binary
+*.npy binary
+*.model binary
+*.vocab text
+*.txt text
+*.md text
+*.ps1 text eol=crlf
