@@ -147,12 +147,12 @@
     {
       "id": "speaker.pyannote_seg",
       "target_path": "models/pyannote-onnx/segmentation-community-1.onnx",
-      "repo": "welcomyou/pyannote-community-1-onnx-split",
+      "repo": "altunenes/speaker-diarization-community-1-onnx",
       "path": "segmentation-community-1.onnx",
       "bytes": 5916375,
       "license": "CC-BY-4.0",
       "sha256": "62d59a487d8ba877d0bd1638c53aa06a810bdb104fb776a27ec2204521711006",
-      "revision": "cde44c2db938c8abb755853b9a87cb3179c47803"
+      "revision": "e2e09da94ae093a56cd5a60a09b138ae3da1959c"
     },
     {
       "id": "speaker.pyannote_embedding_encoder",

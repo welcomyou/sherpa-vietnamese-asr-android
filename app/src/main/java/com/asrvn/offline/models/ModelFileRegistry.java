@@ -219,7 +219,7 @@ public final class ModelFileRegistry {
 
     private List<RemoteModelFile> pyannoteRemoteFiles() {
         List<RemoteModelFile> files = new ArrayList<>();
-        files.add(new RemoteModelFile("speaker.pyannote_seg", "csukuangfj/sherpa-onnx-pyannote-segmentation-3-0", "model.onnx", "models/pyannote-onnx/segmentation-community-1.onnx", 5992913L));
+        files.add(new RemoteModelFile("speaker.pyannote_seg", "altunenes/speaker-diarization-community-1-onnx", "segmentation-community-1.onnx", "models/pyannote-onnx/segmentation-community-1.onnx", 5916375L));
         files.add(new RemoteModelFile("speaker.pyannote_embedding_encoder", "welcomyou/pyannote-community-1-onnx-split", "embedding_encoder.onnx", "models/pyannote-onnx/embedding_encoder.onnx", 21306024L));
         files.add(new RemoteModelFile("speaker.pyannote_resnet_weight", "welcomyou/pyannote-community-1-onnx-split", "resnet_seg_1_weight.npy", "models/pyannote-onnx/resnet_seg_1_weight.npy", 5243008L));
         files.add(new RemoteModelFile("speaker.pyannote_resnet_bias", "welcomyou/pyannote-community-1-onnx-split", "resnet_seg_1_bias.npy", "models/pyannote-onnx/resnet_seg_1_bias.npy", 1152L));
