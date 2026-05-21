@@ -119,7 +119,7 @@ The repository includes `.github/workflows/android-apk.yml`.
 
 - Every push or pull request to `main` builds a debug APK and uploads it as a workflow artifact.
 - The default GitHub build is source-only: it verifies the Android project and creates an APK, but it does not bundle large model binaries because they are intentionally ignored by Git.
-- To build a full offline APK on GitHub, run the workflow manually with `bundle_models=true`. Add a repository secret named `HF_TOKEN` first if the selected Hugging Face model files require accepted terms or authentication.
+- To build a full offline APK on GitHub, run the workflow manually with `bundle_models=true`. Add a repository secret named `HF_TOKEN` first if the selected Hugging Face model files require accepted terms or authentication. The workflow generates `bpe.vocab` from `bpe.model` with SentencePiece, matching the desktop app hotword setup.
 
 Download the APK from the workflow run's `Artifacts` section:
 

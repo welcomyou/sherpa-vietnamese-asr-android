@@ -49,16 +49,6 @@
       "revision": "0fc3fea3ccd9c50b439755fa8a6aba546cb3a7d4"
     },
     {
-      "id": "asr68.bpe_vocab",
-      "target_path": "models/sherpa-onnx-zipformer-vi-2025-04-20/bpe.vocab",
-      "repo": "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20",
-      "path": "bpe.vocab",
-      "bytes": 57006,
-      "license": "See upstream model card",
-      "sha256": "897e0c58b262e59ad0b4ad6aedf50d6c309b2724b7db32a1f72ee978cec5b794",
-      "revision": "0fc3fea3ccd9c50b439755fa8a6aba546cb3a7d4"
-    },
-    {
       "id": "asr68.bpe_model",
       "target_path": "models/sherpa-onnx-zipformer-vi-2025-04-20/bpe.model",
       "repo": "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20",
@@ -67,6 +57,16 @@
       "license": "See upstream model card",
       "sha256": "289dbb44527c13c419ae3a4d8ce6a349f01a97f8777e69934a77e3692d2f10db",
       "revision": "0fc3fea3ccd9c50b439755fa8a6aba546cb3a7d4"
+    },
+    {
+      "id": "asr68.bpe_vocab",
+      "target_path": "models/sherpa-onnx-zipformer-vi-2025-04-20/bpe.vocab",
+      "generated_from": [
+        "asr68.bpe_model"
+      ],
+      "bytes": 57006,
+      "license": "Generated locally from bpe.model; same upstream model card applies",
+      "sha256": "897e0c58b262e59ad0b4ad6aedf50d6c309b2724b7db32a1f72ee978cec5b794"
     },
     {
       "id": "vad.silero",

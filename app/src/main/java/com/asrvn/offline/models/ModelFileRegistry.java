@@ -93,7 +93,6 @@ public final class ModelFileRegistry {
         addIfMissing(files, new RemoteModelFile("asr68.decoder", "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20", "decoder-epoch-12-avg-8.onnx", "models/sherpa-onnx-zipformer-vi-2025-04-20/decoder-epoch-12-avg-8.onnx", 5165084L));
         addIfMissing(files, new RemoteModelFile("asr68.joiner", "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20", "joiner-epoch-12-avg-8.onnx", "models/sherpa-onnx-zipformer-vi-2025-04-20/joiner-epoch-12-avg-8.onnx", 4104465L));
         addIfMissing(files, new RemoteModelFile("asr68.tokens", "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20", "tokens.txt", "models/sherpa-onnx-zipformer-vi-2025-04-20/tokens.txt", 25847L));
-        addIfMissing(files, new RemoteModelFile("asr68.bpe_vocab", "csukuangfj/sherpa-onnx-zipformer-vi-2025-04-20", "bpe.vocab", "models/sherpa-onnx-zipformer-vi-2025-04-20/bpe.vocab", 57006L));
         addIfMissing(files, new RemoteModelFile("vad.silero", "snakers4/silero-vad", "files/silero_vad_16k_op15.onnx", "models/silero-vad/silero_vad_16k_op15.onnx", 1289603L));
         addIfMissing(files, new RemoteModelFile("speaker.campp", "welcomyou/campplus-3dspeaker-200k-onnx", "campplus_cn_en_common_200k.onnx", "models/campp-3dspeaker/campplus_cn_en_common_200k.onnx", 28283928L));
         addIfMissing(files, new RemoteModelFile("quality.dnsmos", "microsoft/DNS-Challenge", "DNSMOS/DNSMOS/sig_bak_ovr.onnx", "models/dnsmos/sig_bak_ovr.onnx", 1157965L, "https://github.com/microsoft/DNS-Challenge/raw/master/DNSMOS/DNSMOS/sig_bak_ovr.onnx"));

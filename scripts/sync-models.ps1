@@ -70,6 +70,36 @@ function Write-HuggingFaceAccessHint([string] $url) {
 }
 
 function Try-PrepareGeneratedModel($file) {
+    if ([string] $file.id -eq "asr68.bpe_vocab") {
+        $vocabPath = Join-RepoPath $repoRoot ([string] $file.target_path)
+        if (Test-Path -LiteralPath $vocabPath) {
+            return $vocabPath
+        }
+
+        $modelRelative = "models/sherpa-onnx-zipformer-vi-2025-04-20/bpe.model"
+        $modelPath = Resolve-SourceModelPath $modelRelative
+        if (-not (Test-Path -LiteralPath $modelPath)) {
+            return $null
+        }
+
+        New-ParentDirectory $vocabPath
+        $python = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $python) {
+            throw "Python is required to generate bpe.vocab. Install Python and run: python -m pip install sentencepiece"
+        }
+
+        $prepareScript = Join-Path $repoRoot "scripts/prepare-bpe-vocab.py"
+        Write-Host "Generating $($file.id)"
+        $prepareOutput = & $python.Source $prepareScript --model $modelPath --output $vocabPath 2>&1
+        foreach ($line in $prepareOutput) {
+            Write-Host $line
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate bpe.vocab. Install dependencies with: python -m pip install sentencepiece"
+        }
+        return $vocabPath
+    }
+
     if ([string] $file.id -ne "speaker.pyannote_plda_prepared") {
         return $null
     }

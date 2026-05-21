@@ -1,5 +1,8 @@
 name: Android APK
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   push:
     branches:
@@ -55,7 +58,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy scipy
+          python -m pip install numpy scipy sentencepiece
           ./scripts/sync-models.ps1 -DownloadMissing
 
       - name: Build debug APK
