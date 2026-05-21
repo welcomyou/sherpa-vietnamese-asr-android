@@ -5,6 +5,7 @@ import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
 
 import java.nio.FloatBuffer;
+import java.util.List;
 import java.util.Collections;
 
 public final class DnsmosEngine implements AutoCloseable {
@@ -72,6 +73,24 @@ public final class DnsmosEngine implements AutoCloseable {
             int end = Math.min(speechSamples.length, start + SAMPLE_LENGTH);
             if (end - start < MIN_SAMPLES) continue;
             Score score = computeSingle(speechSamples, start, end);
+            sig += score.sig;
+            bak += score.bak;
+            ovrl += score.ovrl;
+            count++;
+        }
+        if (count == 0) return null;
+        return new Score(round2(sig / count), round2(bak / count), round2(ovrl / count), provider);
+    }
+
+    public Score computeWindows(List<float[]> windows) throws Exception {
+        if (windows == null || windows.isEmpty()) return null;
+        double sig = 0.0;
+        double bak = 0.0;
+        double ovrl = 0.0;
+        int count = 0;
+        for (float[] window : windows) {
+            if (window == null || window.length < MIN_SAMPLES) continue;
+            Score score = computeSingle(window, 0, Math.min(window.length, SAMPLE_LENGTH));
             sig += score.sig;
             bak += score.bak;
             ovrl += score.ovrl;

@@ -2,9 +2,14 @@ package com.asrvn.offline;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.Manifest;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.database.Cursor;
 import android.graphics.Color;
@@ -18,6 +23,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+import android.text.Layout;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.Editable;
@@ -26,9 +32,11 @@ import android.text.TextPaint;
 import android.text.TextWatcher;
 import android.text.method.LinkMovementMethod;
 import android.text.style.ClickableSpan;
+import android.text.style.ForegroundColorSpan;
 import android.util.TypedValue;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -61,22 +69,26 @@ import com.asrvn.offline.storage.NativeFileLibrary;
 
 import java.io.File;
 import java.io.ByteArrayOutputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public final class MainActivity extends Activity {
     private static final String TAG = "ASRVN";
     private static final int REQUEST_OPEN_MEDIA = 1001;
     private static final int REQUEST_IMPORT_HOTWORD_TXT = 1002;
     private static final int REQUEST_EXPORT_HOTWORD_TXT = 1003;
+    private static final int REQUEST_POST_NOTIFICATIONS = 1004;
 
     private static final int BG = Color.rgb(43, 43, 43);
     private static final int CARD = Color.rgb(58, 58, 58);
@@ -89,6 +101,8 @@ public final class MainActivity extends Activity {
     private static final int PRIMARY = Color.rgb(37, 99, 180);
     private static final int SUCCESS = Color.rgb(40, 167, 69);
     private static final int DANGER = Color.rgb(220, 53, 69);
+    private static final int HIGHLIGHT_BG = Color.argb(115, 255, 193, 7);
+    private static final int HIGHLIGHT_TEXT = Color.rgb(31, 41, 55);
     private static final int[] SPEAKER_COLORS = new int[]{
             Color.rgb(0, 123, 255),
             Color.rgb(40, 167, 69),
@@ -148,6 +162,44 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static final class SegmentSplit {
+        final int beforeIndex;
+        final int afterIndex;
+
+        SegmentSplit(int beforeIndex, int afterIndex) {
+            this.beforeIndex = beforeIndex;
+            this.afterIndex = afterIndex;
+        }
+    }
+
+    private final class WordSeekSpan extends ClickableSpan {
+        final double seconds;
+        final int segmentIndex;
+        final int wordIndex;
+        final boolean active;
+
+        WordSeekSpan(double seconds, int segmentIndex, int wordIndex, boolean active) {
+            this.seconds = seconds;
+            this.segmentIndex = segmentIndex;
+            this.wordIndex = wordIndex;
+            this.active = active;
+        }
+
+        @Override
+        public void onClick(View widget) {
+            selectTranscriptTarget(segmentIndex, wordIndex);
+            renderEditorTranscript();
+            seekTo(segmentStartSeconds(segmentIndex));
+        }
+
+        @Override
+        public void updateDrawState(TextPaint ds) {
+            super.updateDrawState(ds);
+            ds.setColor(active ? HIGHLIGHT_TEXT : TEXT);
+            ds.setUnderlineText(false);
+        }
+    }
+
     private static final class HotwordItem {
         String text;
         double score;
@@ -161,7 +213,13 @@ public final class MainActivity extends Activity {
     private FrameLayout rootFrame;
     private View drawer;
     private View scrim;
+    private View hotwordPanel;
+    private View hotwordScrim;
+    private FrameLayout contentScrollbar;
+    private View contentScrollThumb;
     private LinearLayout libraryList;
+    private CheckBox librarySelectAll;
+    private EditText librarySearch;
     private LinearLayout configBody;
     private TextView configHeaderText;
     private View dropZoneView;
@@ -178,6 +236,9 @@ public final class MainActivity extends Activity {
     private String pendingHotwordExportText;
     private LinearLayout transcriptRoot;
     private TextView transcriptEmptyView;
+    private LinearLayout qualityStripView;
+    private LinearLayout audioSummaryView;
+    private LinearLayout resultTimingView;
     private TextView playerTimeView;
     private Button playerPlayPauseButton;
     private SeekBar playerSeekBar;
@@ -185,6 +246,7 @@ public final class MainActivity extends Activity {
     private TextView progressText;
     private ProgressBar progressBar;
     private View progressContainer;
+    private Button cancelProcessingButton;
     private View resultPanelView;
     private View fixedPlayerView;
     private Spinner speakerModelSpinner;
@@ -192,22 +254,31 @@ public final class MainActivity extends Activity {
     private boolean userSeeking;
     private boolean configExpanded = true;
     private int activeSegmentIndex = -1;
+    private int activeWordIndex = -1;
     private long lastActiveAutoScrollAtMs;
     private Uri selectedUri;
+    private File selectedStagedInputFile;
     private String selectedLibraryItemId;
     private String selectedDisplayName;
     private long selectedFileSizeBytes;
     private String pendingDebugSpeakerModel;
+    private String activeProcessingItemId;
+    private String librarySearchQuery = "";
     private String currentTranscriptText = "";
+    private String currentQualityInfoJson;
+    private String currentTimingJson;
+    private String currentAudioSummaryJson;
     private double currentDurationSeconds;
     private final List<EditorSegment> editorSegments = new ArrayList<>();
     private final Map<Integer, SpeakerMeta> editorSpeakers = new LinkedHashMap<>();
+    private final Set<String> selectedLibraryItemIds = new HashSet<>();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
 
     private NativeOfflinePipeline pipeline;
     private NativeSettings settings;
     private ModelFileRegistry models;
     private NativeFileLibrary library;
+    private BroadcastReceiver processingReceiver;
 
     private interface LevelSetter {
         void setLevel(int value);
@@ -227,8 +298,11 @@ public final class MainActivity extends Activity {
             window.setNavigationBarColor(BG);
         }
         setContentView(buildContentView());
+        registerProcessingReceiver();
+        requestNotificationPermissionForProgress();
         rootFrame.postDelayed(this::showInitialModelDownloadPromptIfNeeded, 700);
         handleDebugIntent(getIntent());
+        handleIncomingFileIntent(getIntent());
     }
 
     @Override
@@ -236,13 +310,100 @@ public final class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleDebugIntent(intent);
+        handleIncomingFileIntent(intent);
     }
 
     @Override
     protected void onDestroy() {
         uiHandler.removeCallbacksAndMessages(null);
+        if (processingReceiver != null) {
+            try {
+                unregisterReceiver(processingReceiver);
+            } catch (Exception ignored) {
+            }
+            processingReceiver = null;
+        }
         releaseMediaPlayer();
         super.onDestroy();
+    }
+
+    private void registerProcessingReceiver() {
+        processingReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                handleProcessingBroadcast(intent);
+            }
+        };
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ProcessingForegroundService.ACTION_PROGRESS);
+        filter.addAction(ProcessingForegroundService.ACTION_COMPLETE);
+        filter.addAction(ProcessingForegroundService.ACTION_ERROR);
+        filter.addAction(ProcessingForegroundService.ACTION_CANCELLED);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(processingReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(processingReceiver, filter);
+        }
+    }
+
+    private void requestNotificationPermissionForProgress() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return;
+        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_POST_NOTIFICATIONS);
+    }
+
+    private void handleProcessingBroadcast(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        if (ProcessingForegroundService.ACTION_PROGRESS.equals(action)) {
+            String phase = intent.getStringExtra(ProcessingForegroundService.EXTRA_PHASE);
+            String message = intent.getStringExtra(ProcessingForegroundService.EXTRA_MESSAGE);
+            String itemId = intent.getStringExtra(ProcessingForegroundService.EXTRA_ITEM_ID);
+            if (itemId != null && !itemId.isEmpty()) activeProcessingItemId = itemId;
+            int percent = intent.getIntExtra(ProcessingForegroundService.EXTRA_PERCENT, 0);
+            setProgress(phase == null ? "Đang xử lý" : phase, percent);
+            appendLog((phase == null ? "Đang xử lý" : phase) + ": " + (message == null ? "" : message));
+            if (percent >= 100) refreshLibraryList();
+            return;
+        }
+        if (ProcessingForegroundService.ACTION_COMPLETE.equals(action)) {
+            String itemId = intent.getStringExtra(ProcessingForegroundService.EXTRA_ITEM_ID);
+            String resultJson = intent.getStringExtra(ProcessingForegroundService.EXTRA_RESULT_JSON);
+            try {
+                NativeFileLibrary.LibraryItem item = itemId == null ? null : library.getItem(itemId);
+                discardStagedInputFile();
+                if (item != null) {
+                    selectedLibraryItemId = item.id;
+                    selectedUri = Uri.fromFile(item.sourceFile);
+                    updateSelectedFileUi(item.originalName, item.sourceFile.length());
+                    prepareMediaPlayer(selectedUri);
+                }
+                if (resultJson != null) {
+                    renderTranscriptFromJson(resultJson);
+                    if (resultPanelView != null) resultPanelView.setVisibility(View.VISIBLE);
+                }
+                setProgress("Done", 100);
+                activeProcessingItemId = null;
+                refreshLibraryList();
+            } catch (Exception error) {
+                appendLog("Render background result failed: " + error.getMessage());
+            }
+            return;
+        }
+        if (ProcessingForegroundService.ACTION_CANCELLED.equals(action)) {
+            activeProcessingItemId = null;
+            setProgress("Đã hủy", 100);
+            appendLog("Đã hủy xử lý.");
+            refreshLibraryList();
+            return;
+        }
+        if (ProcessingForegroundService.ACTION_ERROR.equals(action)) {
+            String message = intent.getStringExtra(ProcessingForegroundService.EXTRA_MESSAGE);
+            activeProcessingItemId = null;
+            setProgress("Pipeline failed", 100);
+            appendLog("Error: " + (message == null ? "Unknown error" : message));
+            refreshLibraryList();
+        }
     }
 
     private View buildContentView() {
@@ -252,7 +413,9 @@ public final class MainActivity extends Activity {
         LinearLayout app = vertical();
         app.setBackgroundColor(BG);
         app.setPadding(0, statusBarHeight(), 0, 0);
-        app.addView(topBar());
+        app.addView(topBar(), new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                topBarHeight()));
         app.addView(mainScroll(), new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         rootFrame.addView(app);
@@ -263,6 +426,15 @@ public final class MainActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 dp(62),
                 Gravity.BOTTOM));
+
+        contentScrollbar = contentFastScrollbar();
+        FrameLayout.LayoutParams scrollbarParams = new FrameLayout.LayoutParams(
+                dp(30),
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.RIGHT);
+        scrollbarParams.topMargin = statusBarHeight() + topBarHeight() + dp(8);
+        scrollbarParams.bottomMargin = dp(74);
+        rootFrame.addView(contentScrollbar, scrollbarParams);
 
         scrim = new View(this);
         scrim.setBackgroundColor(Color.argb(70, 0, 0, 0));
@@ -283,32 +455,198 @@ public final class MainActivity extends Activity {
                 Gravity.RIGHT);
         drawer.setVisibility(View.GONE);
         rootFrame.addView(drawer, drawerParams);
+
+        hotwordScrim = new View(this);
+        hotwordScrim.setBackgroundColor(Color.argb(80, 0, 0, 0));
+        hotwordScrim.setVisibility(View.GONE);
+        hotwordScrim.setOnClickListener(v -> closeHotwordPanel(false));
+        rootFrame.addView(hotwordScrim, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
         refreshLibraryList();
         return rootFrame;
     }
 
     private View topBar() {
+        int height = topBarHeight();
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(16), 0, dp(16), 0);
         bar.setBackgroundColor(CARD);
 
-        TextView title = text("Sherpa Vietnamese\nASR", 20, true, ACCENT);
+        TextView title = text("Sherpa Vietnamese ASR", 19, true, ACCENT);
         title.setLineSpacing(0, 1.0f);
-        bar.addView(title, new LinearLayout.LayoutParams(0, dp(78), 1f));
+        title.setSingleLine(false);
+        title.setMaxLines(2);
+        title.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        bar.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
 
-        TextView info = text("i", 18, true, Color.rgb(174, 174, 174));
+        TextView info = text("i", 18, true, Color.rgb(205, 225, 255));
         info.setGravity(Gravity.CENTER);
-        bar.addView(info, new LinearLayout.LayoutParams(dp(42), dp(78)));
+        GradientDrawable infoBg = new GradientDrawable();
+        infoBg.setShape(GradientDrawable.OVAL);
+        infoBg.setColor(Color.TRANSPARENT);
+        infoBg.setStroke(dp(2), Color.rgb(170, 205, 255));
+        info.setBackground(infoBg);
+        info.setOnClickListener(v -> showAboutDialog());
+        int iconSize = Math.max(dp(38), Math.min(dp(52), scaledTextHeight(18, 1, 38)));
+        LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(iconSize, iconSize);
+        infoParams.leftMargin = dp(4);
+        infoParams.rightMargin = dp(6);
+        bar.addView(info, infoParams);
 
-        Button files = button("Quản lý tập\ntin", ELEVATED, v -> openDrawer());
-        files.setTextSize(TypedValue.COMPLEX_UNIT_PX, 18 * uiScale());
+        Button files = button("Quản lý tập tin", ELEVATED, v -> openDrawer());
+        files.setTextSize(TypedValue.COMPLEX_UNIT_PX, 17 * uiScale());
         files.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(156), dp(68));
+        files.setSingleLine(false);
+        files.setMaxLines(2);
+        files.setLineSpacing(0, 1.0f);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(180), Math.max(dp(52), height - dp(10)));
         params.leftMargin = dp(8);
         bar.addView(files, params);
         return bar;
+    }
+
+    private void showAboutDialog() {
+        LinearLayout body = vertical();
+        body.setPadding(dp(18), dp(16), dp(18), dp(14));
+        body.setBackground(rounded(CARD, BORDER, 1, 8));
+
+        body.addView(text("Thông tin", 24, true, TEXT));
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout content = vertical();
+        content.setPadding(0, dp(10), 0, dp(4));
+
+        TextView appName = text("sherpa-vietnamese-asr", 20, true, ACCENT);
+        content.addView(appName);
+        TextView version = text("Phiên bản " + appVersionName(), 16, false, MUTED);
+        version.setPadding(0, dp(3), 0, dp(12));
+        content.addView(version);
+
+        addAboutInfoBlock(content, "Thiết kế", new String[]{
+                "Nguyễn Hồng Quân",
+                "nhquan.thanhuy@tphcm.gov.vn — 098.558.3555",
+                "Phòng Chuyển đổi số - Cơ yếu, VP Thành ủy TP.HCM"
+        });
+        addAboutInfoBlock(content, "Lập trình", new String[]{
+                "Claude và những người bạn"
+        });
+
+        TextView license = text(
+                "Phần mềm sử dụng trong môi trường giáo dục, hành chính công, tổ chức Đảng, đoàn thể. Không sử dụng cho mục đích thương mại.",
+                16,
+                false,
+                Color.rgb(255, 215, 0));
+        license.setGravity(Gravity.CENTER);
+        license.setLineSpacing(dp(2), 1.0f);
+        license.setPadding(dp(14), dp(12), dp(14), dp(12));
+        license.setBackground(rounded(Color.argb(20, 255, 215, 0), Color.argb(52, 255, 215, 0), 1, 6));
+        content.addView(withMargins(license, 0, 2, 0, 12));
+
+        addAboutDetailsBlock(content, "Chức năng", new String[]{
+                "• Chuyển ghi âm thành văn bản tiếng Việt (offline)",
+                "• 3 model ASR: Zipformer 30M, 68M, ROVER",
+                "• Phân tách người nói: Pyannote Community-1, Senko CAM++",
+                "• NaturalTurn: nhận diện lượt nói tự nhiên",
+                "• Tự động thêm dấu câu, viết hoa",
+                "• Tóm tắt cuộc họp (Gemma 4 E2B)",
+                "• Hỗ trợ hotwords (từ khóa tùy chỉnh)",
+                "• Đánh giá chất lượng âm thanh (DNSMOS)",
+                "• PWA — cài trên mobile/desktop như app native"
+        });
+        addAboutDetailsBlock(content, "Công nghệ", new String[]{
+                "• ASR: Sherpa-ONNX, Zipformer RNN-T (30M + 68M)",
+                "• Diarization: Pyannote Community-1 + Senko CAM++ (Pure ONNX Runtime)",
+                "• Dấu câu: ViBERT-capu (ONNX)",
+                "• VAD: Pyannote Segmentation (ONNX)",
+                "• Summarizer: Gemma 4 E2B (GGUF, llama-cpp-python)",
+                "• Resampling: SoXR VHQ",
+                "• Web: FastAPI, WebSocket, SQLite"
+        });
+        scroll.addView(content);
+        body.addView(scroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(520)));
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        Button closeButton = button("Đóng", INPUT, v -> {
+            if (holder[0] != null) holder[0].dismiss();
+        });
+        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(46));
+        closeParams.topMargin = dp(16);
+        body.addView(closeButton, closeParams);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(body)
+                .create();
+        holder[0] = dialog;
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        }
+    }
+
+    private void addAboutInfoBlock(LinearLayout parent, String label, String[] lines) {
+        LinearLayout block = vertical();
+        block.setPadding(0, dp(3), 0, dp(8));
+        TextView title = text(label.toUpperCase(Locale.ROOT), 12, true, MUTED);
+        title.setPadding(0, 0, 0, dp(3));
+        block.addView(title);
+        for (int i = 0; i < lines.length; i++) {
+            TextView item = text(lines[i], i == 0 ? 15 : 13, false, i == 0 ? TEXT : MUTED);
+            item.setLineSpacing(dp(1), 1.0f);
+            item.setPadding(0, dp(1), 0, dp(1));
+            block.addView(item);
+        }
+        parent.addView(block);
+    }
+
+    private void addAboutDetailsBlock(LinearLayout parent, String label, String[] lines) {
+        LinearLayout block = vertical();
+        block.setBackground(rounded(CARD, BORDER, 1, 6));
+
+        TextView summary = text("▶  " + label, 15, true, SUCCESS);
+        summary.setPadding(dp(12), 0, dp(12), 0);
+        summary.setBackground(rounded(Color.argb(8, 255, 255, 255), BORDER, 0, 6));
+        block.addView(summary, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(42)));
+
+        LinearLayout content = vertical();
+        content.setPadding(dp(18), dp(4), dp(12), dp(10));
+        content.setVisibility(View.GONE);
+        for (String line : lines) {
+            TextView item = text(line, 14, false, MUTED);
+            item.setSingleLine(false);
+            item.setLineSpacing(dp(2), 1.0f);
+            item.setPadding(0, dp(2), 0, dp(2));
+            content.addView(item);
+        }
+        block.addView(content);
+
+        summary.setOnClickListener(v -> {
+            boolean opening = content.getVisibility() != View.VISIBLE;
+            content.setVisibility(opening ? View.VISIBLE : View.GONE);
+            summary.setText((opening ? "▼  " : "▶  ") + label);
+        });
+        parent.addView(withMargins(block, 0, 0, 0, 6));
+    }
+
+    private String appVersionName() {
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                return getPackageManager()
+                        .getPackageInfo(getPackageName(), android.content.pm.PackageManager.PackageInfoFlags.of(0))
+                        .versionName;
+            }
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+            return "0.1.0";
+        }
     }
 
     private View mainScroll() {
@@ -317,6 +655,12 @@ public final class MainActivity extends Activity {
         scroll.setFillViewport(false);
         scroll.setClipToPadding(false);
         scroll.setPadding(0, 0, 0, dp(72));
+        scroll.setVerticalScrollBarEnabled(true);
+        scroll.setScrollbarFadingEnabled(false);
+        scroll.setScrollBarStyle(View.SCROLLBARS_INSIDE_INSET);
+        if (Build.VERSION.SDK_INT >= 23) {
+            scroll.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> updateContentScrollbar());
+        }
         scroll.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         LinearLayout main = vertical();
         main.setPadding(dp(14), dp(12), dp(14), dp(14));
@@ -325,6 +669,76 @@ public final class MainActivity extends Activity {
         main.addView(resultPanel());
         scroll.addView(main);
         return scroll;
+    }
+
+    private FrameLayout contentFastScrollbar() {
+        FrameLayout track = new FrameLayout(this);
+        track.setVisibility(View.GONE);
+        track.setPadding(dp(10), 0, dp(8), 0);
+        track.setOnTouchListener((v, event) -> {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+                scrollContentFromScrollbar(event.getY());
+                return true;
+            }
+            return action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL;
+        });
+
+        contentScrollThumb = new View(this);
+        contentScrollThumb.setBackground(rounded(Color.rgb(135, 135, 135), Color.rgb(160, 160, 160), 1, 4));
+        FrameLayout.LayoutParams thumbParams = new FrameLayout.LayoutParams(
+                dp(8),
+                dp(80),
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        track.addView(contentScrollThumb, thumbParams);
+        return track;
+    }
+
+    private void updateContentScrollbar() {
+        if (contentScrollbar == null || contentScrollThumb == null || mainScrollView == null) return;
+        if (drawer != null && drawer.getVisibility() == View.VISIBLE) {
+            contentScrollbar.setVisibility(View.GONE);
+            return;
+        }
+        View child = mainScrollView.getChildAt(0);
+        if (child == null) {
+            contentScrollbar.setVisibility(View.GONE);
+            return;
+        }
+        int maxScroll = maxMainScrollY(child);
+        int trackHeight = contentScrollbar.getHeight();
+        if (maxScroll <= dp(24) || trackHeight <= 0) {
+            contentScrollbar.setVisibility(View.GONE);
+            return;
+        }
+        int contentHeight = Math.max(mainScrollView.getHeight(), child.getHeight() + mainScrollView.getPaddingBottom());
+        int thumbHeight = Math.max(dp(76), Math.round(trackHeight * (mainScrollView.getHeight() / (float) contentHeight)));
+        thumbHeight = Math.min(trackHeight, thumbHeight);
+        int top = Math.round((trackHeight - thumbHeight) * (mainScrollView.getScrollY() / (float) maxScroll));
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) contentScrollThumb.getLayoutParams();
+        params.height = thumbHeight;
+        params.topMargin = Math.max(0, Math.min(trackHeight - thumbHeight, top));
+        contentScrollThumb.setLayoutParams(params);
+        contentScrollbar.setVisibility(View.VISIBLE);
+    }
+
+    private void scrollContentFromScrollbar(float y) {
+        if (contentScrollbar == null || contentScrollThumb == null || mainScrollView == null) return;
+        View child = mainScrollView.getChildAt(0);
+        if (child == null) return;
+        int maxScroll = maxMainScrollY(child);
+        int trackHeight = contentScrollbar.getHeight();
+        ViewGroup.LayoutParams rawParams = contentScrollThumb.getLayoutParams();
+        int thumbHeight = rawParams == null ? dp(76) : Math.max(dp(40), rawParams.height);
+        int range = Math.max(1, trackHeight - thumbHeight);
+        float ratio = Math.max(0f, Math.min(1f, (y - thumbHeight / 2f) / range));
+        mainScrollView.scrollTo(0, Math.round(maxScroll * ratio));
+        updateContentScrollbar();
+    }
+
+    private int maxMainScrollY(View child) {
+        if (mainScrollView == null || child == null) return 0;
+        return Math.max(0, child.getHeight() + mainScrollView.getPaddingBottom() - mainScrollView.getHeight());
     }
 
     private View configPanel() {
@@ -415,20 +829,21 @@ public final class MainActivity extends Activity {
         selectedFileView.setOrientation(LinearLayout.HORIZONTAL);
         selectedFileView.setGravity(Gravity.CENTER);
         selectedFileView.setVisibility(View.GONE);
+        int selectedFileRowHeight = scaledTextHeight(24, 1, 42);
         TextView fileIcon = text("📄", 24, false, MUTED);
-        selectedFileView.addView(fileIcon, new LinearLayout.LayoutParams(dp(34), dp(42)));
+        selectedFileView.addView(fileIcon, new LinearLayout.LayoutParams(dp(34), selectedFileRowHeight));
         fileNameView = text("", 17, true, TEXT);
-        selectedFileView.addView(fileNameView, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        selectedFileView.addView(fileNameView, new LinearLayout.LayoutParams(0, selectedFileRowHeight, 1f));
         fileSizeView = text("", 13, false, MUTED);
         fileSizeView.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
-        selectedFileView.addView(fileSizeView, new LinearLayout.LayoutParams(dp(90), dp(42)));
+        selectedFileView.addView(fileSizeView, new LinearLayout.LayoutParams(dp(90), selectedFileRowHeight));
         TextView clear = text("×", 26, true, DANGER);
         clear.setGravity(Gravity.CENTER);
         clear.setOnClickListener(v -> {
             clearSelectedFile();
             v.getParent().requestDisallowInterceptTouchEvent(true);
         });
-        selectedFileView.addView(clear, new LinearLayout.LayoutParams(dp(38), dp(42)));
+        selectedFileView.addView(clear, new LinearLayout.LayoutParams(dp(38), selectedFileRowHeight));
         drop.addView(selectedFileView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -468,10 +883,19 @@ public final class MainActivity extends Activity {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         stageView = text("Đang chờ...", 13, true, MUTED);
+        stageView.setSingleLine(false);
+        stageView.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
         progressText = text("0%", 13, true, MUTED);
+        progressText.setSingleLine(true);
         progressText.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
-        head.addView(stageView, new LinearLayout.LayoutParams(0, dp(20), 1f));
-        head.addView(progressText, new LinearLayout.LayoutParams(dp(58), dp(20)));
+        int headHeight = scaledTextHeight(13, 2, 34);
+        head.addView(stageView, new LinearLayout.LayoutParams(0, headHeight, 1f));
+        head.addView(progressText, new LinearLayout.LayoutParams(dp(72), headHeight));
+        cancelProcessingButton = button("Hủy", DANGER, v -> cancelProcessing());
+        cancelProcessingButton.setTextSize(TypedValue.COMPLEX_UNIT_PX, 12 * uiScale());
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(dp(78), Math.max(dp(32), scaledTextHeight(12, 1, 28)));
+        cancelParams.leftMargin = dp(8);
+        head.addView(cancelProcessingButton, cancelParams);
         block.addView(head);
 
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
@@ -526,6 +950,31 @@ public final class MainActivity extends Activity {
         // The actual player is fixed at the bottom of the screen so transcript
         // scrolling does not hide the current audio position.
 
+        qualityStripView = new LinearLayout(this);
+        qualityStripView.setOrientation(LinearLayout.HORIZONTAL);
+        qualityStripView.setGravity(Gravity.CENTER_VERTICAL);
+        qualityStripView.setPadding(dp(18), dp(6), dp(18), dp(2));
+        qualityStripView.setVisibility(View.GONE);
+        panel.addView(qualityStripView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        audioSummaryView = vertical();
+        audioSummaryView.setPadding(dp(18), dp(4), dp(18), dp(6));
+        audioSummaryView.setVisibility(View.GONE);
+        panel.addView(audioSummaryView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        resultTimingView = new LinearLayout(this);
+        resultTimingView.setOrientation(LinearLayout.HORIZONTAL);
+        resultTimingView.setGravity(Gravity.CENTER_VERTICAL);
+        resultTimingView.setPadding(dp(18), dp(4), dp(18), dp(6));
+        resultTimingView.setVisibility(View.GONE);
+        panel.addView(resultTimingView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
         transcriptRoot = vertical();
         transcriptRoot.setPadding(dp(18), 0, dp(18), dp(8));
         transcriptEmptyView = text("Chưa có nội dung. Chọn file và bấm Xử lý để hiển thị transcript tại đây.", 16, false, MUTED);
@@ -555,7 +1004,14 @@ public final class MainActivity extends Activity {
 
         playerPlayPauseButton = button("▶", INPUT, v -> togglePlayback());
         playerPlayPauseButton.setTextSize(TypedValue.COMPLEX_UNIT_PX, 20 * uiScale());
-        player.addView(playerPlayPauseButton, new LinearLayout.LayoutParams(dp(52), dp(48)));
+        playerPlayPauseButton.setPadding(0, 0, 0, 0);
+        playerPlayPauseButton.setMinWidth(0);
+        playerPlayPauseButton.setMinimumWidth(0);
+        playerPlayPauseButton.setIncludeFontPadding(false);
+        playerPlayPauseButton.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
+        LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+        playParams.rightMargin = dp(8);
+        player.addView(playerPlayPauseButton, playParams);
 
         playerTimeView = text("00:00 / 00:00", 14, true, MUTED);
         player.addView(playerTimeView, new LinearLayout.LayoutParams(dp(126), dp(48)));
@@ -607,16 +1063,24 @@ public final class MainActivity extends Activity {
         header.setBackgroundColor(CARD);
         header.addView(text("Quản lý tập tin", 24, true, TEXT), new LinearLayout.LayoutParams(0, dp(58), 1f));
 
-        EditText search = new EditText(this);
-        search.setHint("Tìm kiếm...");
-        search.setSingleLine(true);
-        search.setTextSize(TypedValue.COMPLEX_UNIT_PX, 16 * uiScale());
-        search.setTextColor(TEXT);
-        search.setHintTextColor(Color.rgb(135, 135, 135));
-        search.setInputType(InputType.TYPE_CLASS_TEXT);
-        search.setPadding(dp(14), 0, dp(14), 0);
-        search.setBackground(rounded(INPUT, BORDER, 1, 4));
-        header.addView(search, new LinearLayout.LayoutParams(dp(260), dp(48)));
+        librarySearch = new EditText(this);
+        librarySearch.setHint("Tìm kiếm...");
+        librarySearch.setSingleLine(true);
+        librarySearch.setTextSize(TypedValue.COMPLEX_UNIT_PX, 16 * uiScale());
+        librarySearch.setTextColor(TEXT);
+        librarySearch.setHintTextColor(Color.rgb(135, 135, 135));
+        librarySearch.setInputType(InputType.TYPE_CLASS_TEXT);
+        librarySearch.setPadding(dp(14), 0, dp(14), 0);
+        librarySearch.setBackground(rounded(INPUT, BORDER, 1, 4));
+        librarySearch.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                librarySearchQuery = s == null ? "" : s.toString();
+                refreshLibraryList();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        header.addView(librarySearch, new LinearLayout.LayoutParams(dp(260), dp(48)));
 
         TextView close = text("×", 34, true, MUTED);
         close.setGravity(Gravity.CENTER);
@@ -632,10 +1096,11 @@ public final class MainActivity extends Activity {
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.setPadding(dp(16), dp(10), dp(16), dp(10));
-        CheckBox all = checkPlain("Chọn tất cả", false);
-        all.setTextSize(TypedValue.COMPLEX_UNIT_PX, 18 * uiScale());
-        toolbar.addView(all, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        toolbar.addView(button("Xóa đã chọn", DANGER, v -> appendLog("Chọn file cần xóa trong bước tiếp theo.")),
+        librarySelectAll = checkPlain("Chọn tất cả", false);
+        librarySelectAll.setTextSize(TypedValue.COMPLEX_UNIT_PX, 18 * uiScale());
+        librarySelectAll.setOnClickListener(v -> toggleSelectAllLibraryItems(librarySelectAll.isChecked()));
+        toolbar.addView(librarySelectAll, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        toolbar.addView(button("Xóa đã chọn", DANGER, v -> deleteSelectedLibraryItems()),
                 new LinearLayout.LayoutParams(dp(166), dp(44)));
         panel.addView(toolbar);
 
@@ -655,6 +1120,7 @@ public final class MainActivity extends Activity {
     private void openDrawer() {
         refreshLibraryList();
         if (fixedPlayerView != null) fixedPlayerView.setVisibility(View.GONE);
+        if (contentScrollbar != null) contentScrollbar.setVisibility(View.GONE);
         drawer.setVisibility(View.VISIBLE);
         scrim.setVisibility(View.VISIBLE);
         drawer.setTranslationX(drawer.getWidth() == 0 ? getResources().getDisplayMetrics().widthPixels : drawer.getWidth());
@@ -667,13 +1133,20 @@ public final class MainActivity extends Activity {
             drawer.setVisibility(View.GONE);
             scrim.setVisibility(View.GONE);
             if (fixedPlayerView != null && mediaPlayer != null) fixedPlayerView.setVisibility(View.VISIBLE);
+            updateContentScrollbar();
         }).start();
     }
 
     private void refreshLibraryList() {
         if (libraryList == null) return;
         libraryList.removeAllViews();
-        List<NativeFileLibrary.LibraryItem> items = library.listItems();
+        List<NativeFileLibrary.LibraryItem> allItems = library.listItems();
+        List<NativeFileLibrary.LibraryItem> items = new ArrayList<>();
+        for (NativeFileLibrary.LibraryItem item : allItems) {
+            if (libraryItemMatchesSearch(item)) items.add(item);
+        }
+        selectedLibraryItemIds.retainAll(itemIds(allItems));
+        updateLibrarySelectAllState(items);
         if (items.isEmpty()) {
             TextView empty = text("Chưa có tập tin.", 16, false, MUTED);
             empty.setPadding(dp(12), dp(16), dp(12), dp(16));
@@ -682,27 +1155,129 @@ public final class MainActivity extends Activity {
         }
         SimpleDateFormat fmt = new SimpleDateFormat("d/M/yyyy HH:mm", Locale.getDefault());
         for (NativeFileLibrary.LibraryItem item : items) {
-            LinearLayout row = vertical();
-            row.setPadding(dp(14), dp(14), dp(14), dp(14));
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setMinimumHeight(dp(104));
+            row.setPadding(0, dp(10), dp(14), dp(10));
             row.setBackground(rounded(CARD, BORDER, 1, 8));
             row.setOnClickListener(v -> openLibraryItem(item));
 
+            View checkArea = libraryCheckArea(item);
+            row.addView(checkArea, new LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.MATCH_PARENT));
+
+            LinearLayout body = vertical();
             LinearLayout top = new LinearLayout(this);
             top.setOrientation(LinearLayout.HORIZONTAL);
             top.setGravity(Gravity.CENTER_VERTICAL);
-            top.addView(checkPlain("", false), new LinearLayout.LayoutParams(dp(40), dp(36)));
 
             TextView name = text(item.displayName, 20, true, TEXT);
-            top.addView(name, new LinearLayout.LayoutParams(0, dp(44), 1f));
-            top.addView(badge(library.hasResult(item.id) ? "Hoàn thành" : "Sẵn sàng"));
-            row.addView(top);
+            name.setSingleLine(false);
+            name.setMaxLines(2);
+            top.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            top.addView(fileStatusBadge(item));
+            body.addView(top);
 
-            String meta = formatBytes(item.sourceFile.length()) + "    " + fmt.format(new Date(item.sourceFile.lastModified()));
-            TextView details = text(meta, 16, false, MUTED);
-            details.setPadding(dp(52), 0, 0, 0);
-            row.addView(details);
+            TextView original = text(item.originalName, 16, false, MUTED);
+            original.setPadding(0, 0, 0, 0);
+            original.setSingleLine(false);
+            original.setMaxLines(2);
+            body.addView(original);
+
+            String meta = formatBytes(item.sourceBytes) + "    " + fmt.format(new Date(item.updatedAtMillis));
+            TextView details = text(meta, 15, false, MUTED);
+            details.setPadding(0, dp(2), 0, 0);
+            body.addView(details);
+            row.addView(body, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
             libraryList.addView(withMargins(row, 0, 0, 0, 10));
         }
+    }
+
+    private View libraryCheckArea(NativeFileLibrary.LibraryItem item) {
+        FrameLayout area = new FrameLayout(this);
+        area.setPadding(dp(8), 0, dp(8), 0);
+        CheckBox box = checkPlain("", selectedLibraryItemIds.contains(item.id));
+        box.setClickable(false);
+        box.setFocusable(false);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER);
+        area.addView(box, params);
+        area.setOnClickListener(v -> toggleLibraryItemSelection(item.id));
+        area.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                v.performClick();
+            }
+            return true;
+        });
+        return area;
+    }
+
+    private boolean libraryItemMatchesSearch(NativeFileLibrary.LibraryItem item) {
+        String query = normalizeSearch(librarySearchQuery);
+        if (query.isEmpty()) return true;
+        String haystack = normalizeSearch(item.displayName + " " + item.originalName + " " + item.status);
+        return haystack.contains(query);
+    }
+
+    private String normalizeSearch(String value) {
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private Set<String> itemIds(List<NativeFileLibrary.LibraryItem> items) {
+        Set<String> ids = new HashSet<>();
+        for (NativeFileLibrary.LibraryItem item : items) ids.add(item.id);
+        return ids;
+    }
+
+    private void toggleLibraryItemSelection(String id) {
+        if (id == null) return;
+        if (selectedLibraryItemIds.contains(id)) selectedLibraryItemIds.remove(id);
+        else selectedLibraryItemIds.add(id);
+        refreshLibraryList();
+    }
+
+    private void toggleSelectAllLibraryItems(boolean selected) {
+        List<NativeFileLibrary.LibraryItem> items = library.listItems();
+        for (NativeFileLibrary.LibraryItem item : items) {
+            if (!libraryItemMatchesSearch(item)) continue;
+            if (selected) selectedLibraryItemIds.add(item.id);
+            else selectedLibraryItemIds.remove(item.id);
+        }
+        refreshLibraryList();
+    }
+
+    private void updateLibrarySelectAllState(List<NativeFileLibrary.LibraryItem> visibleItems) {
+        if (librarySelectAll == null) return;
+        librarySelectAll.setOnClickListener(null);
+        boolean allVisibleSelected = !visibleItems.isEmpty();
+        for (NativeFileLibrary.LibraryItem item : visibleItems) {
+            if (!selectedLibraryItemIds.contains(item.id)) {
+                allVisibleSelected = false;
+                break;
+            }
+        }
+        librarySelectAll.setChecked(allVisibleSelected);
+        librarySelectAll.setOnClickListener(v -> toggleSelectAllLibraryItems(librarySelectAll.isChecked()));
+    }
+
+    private void deleteSelectedLibraryItems() {
+        if (selectedLibraryItemIds.isEmpty()) {
+            appendLog("Chưa chọn tập tin để xóa.");
+            return;
+        }
+        List<String> ids = new ArrayList<>(selectedLibraryItemIds);
+        int deleted = 0;
+        for (String id : ids) {
+            try {
+                if (id.equals(activeProcessingItemId)) cancelProcessing();
+                library.deleteItem(id);
+                deleted++;
+            } catch (Exception error) {
+                appendLog("Xóa tập tin thất bại: " + error.getMessage());
+            }
+        }
+        selectedLibraryItemIds.clear();
+        refreshLibraryList();
+        appendLog("Đã xóa " + deleted + " tập tin.");
     }
 
     private View panelHeader(String marker, String title) {
@@ -728,9 +1303,10 @@ public final class MainActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, dp(3), 0, dp(3));
         TextView labelView = text(label, 17, false, MUTED);
-        labelView.setSingleLine(true);
-        row.addView(labelView, new LinearLayout.LayoutParams(controlLabelWidth(), dp(42)));
-        row.addView(control, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        labelView.setSingleLine(false);
+        labelView.setMaxLines(2);
+        row.addView(labelView, new LinearLayout.LayoutParams(controlLabelWidth(), LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(control, new LinearLayout.LayoutParams(0, settings.uiTextScalePercent() >= 170 ? dp(56) : dp(44), 1f));
         return row;
     }
 
@@ -746,7 +1322,8 @@ public final class MainActivity extends Activity {
         row.setPadding(0, dp(2), 0, dp(2));
         TextView labelView = text(label, 17, false, MUTED);
         labelView.setSingleLine(true);
-        row.addView(labelView, new LinearLayout.LayoutParams(controlLabelWidth(), dp(38)));
+        int rowHeight = scaledTextHeight(17, 1, 38);
+        row.addView(labelView, new LinearLayout.LayoutParams(controlLabelWidth(), rowHeight));
         SeekBar seek = new SeekBar(this);
         seek.setPadding(0, 0, 0, 0);
         seek.setThumbOffset(0);
@@ -757,11 +1334,11 @@ public final class MainActivity extends Activity {
             seek.setThumbTintList(ColorStateList.valueOf(ACCENT));
             seek.setProgressBackgroundTintList(ColorStateList.valueOf(Color.rgb(235, 235, 235)));
         }
-        row.addView(seek, new LinearLayout.LayoutParams(0, dp(38), 1f));
-        TextView val = text(formatConfidenceLabel(initial), 15, false, MUTED);
+        row.addView(seek, new LinearLayout.LayoutParams(0, rowHeight, 1f));
+        TextView val = text(formatConfidenceLabel(initial), 17, false, MUTED);
         val.setSingleLine(true);
         val.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
-        row.addView(val, new LinearLayout.LayoutParams(sliderValueWidth(), dp(38)));
+        row.addView(val, new LinearLayout.LayoutParams(sliderValueWidth(), rowHeight));
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             private int pending = initial;
 
@@ -790,25 +1367,26 @@ public final class MainActivity extends Activity {
         row.setPadding(0, dp(2), 0, dp(2));
         TextView labelView = text("Cỡ chữ:", 17, false, MUTED);
         labelView.setSingleLine(true);
-        row.addView(labelView, new LinearLayout.LayoutParams(controlLabelWidth(), dp(38)));
+        int rowHeight = scaledTextHeight(17, 1, 38);
+        row.addView(labelView, new LinearLayout.LayoutParams(controlLabelWidth(), rowHeight));
 
         SeekBar seek = new SeekBar(this);
         seek.setPadding(0, 0, 0, 0);
         seek.setThumbOffset(0);
-        seek.setMax(4);
+        seek.setMax(10);
         int current = settings.uiTextScalePercent();
-        seek.setProgress(Math.max(0, Math.min(4, (current - 100) / 10)));
+        seek.setProgress(Math.max(0, Math.min(10, (current - 100) / 10)));
         if (Build.VERSION.SDK_INT >= 21) {
             seek.setProgressTintList(ColorStateList.valueOf(ACCENT));
             seek.setThumbTintList(ColorStateList.valueOf(ACCENT));
             seek.setProgressBackgroundTintList(ColorStateList.valueOf(Color.rgb(235, 235, 235)));
         }
-        row.addView(seek, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        row.addView(seek, new LinearLayout.LayoutParams(0, rowHeight, 1f));
 
-        TextView val = text(formatTextScale(current), 15, false, MUTED);
+        TextView val = text(formatTextScale(current), 17, false, MUTED);
         val.setSingleLine(true);
         val.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
-        row.addView(val, new LinearLayout.LayoutParams(sliderValueWidth(), dp(38)));
+        row.addView(val, new LinearLayout.LayoutParams(sliderValueWidth(), rowHeight));
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             private int pending = current;
 
@@ -851,6 +1429,10 @@ public final class MainActivity extends Activity {
     }
 
     private void rebuildUiAfterTextScaleChange() {
+        if (isProcessingActive()) {
+            appendLog("Cỡ chữ sẽ áp dụng đầy đủ sau khi xử lý xong.");
+            return;
+        }
         int restoreScrollY = mainScrollView == null ? 0 : mainScrollView.getScrollY();
         String restoreName = selectedDisplayName;
         long restoreSize = selectedFileSizeBytes;
@@ -866,24 +1448,27 @@ public final class MainActivity extends Activity {
         if (fixedPlayerView != null) fixedPlayerView.setVisibility(hasPlayer ? View.VISIBLE : View.GONE);
         updatePlayerTime();
         if (mainScrollView != null) {
-            mainScrollView.post(() -> mainScrollView.scrollTo(0, restoreScrollY));
+            mainScrollView.post(() -> {
+                mainScrollView.scrollTo(0, restoreScrollY);
+                updateContentScrollbar();
+            });
         }
     }
 
     private int controlLabelWidth() {
         int width = getResources().getDisplayMetrics().widthPixels;
-        return Math.max(dp(124), Math.min(dp(168), Math.round(width * 0.30f)));
+        return Math.max(dp(140), Math.min(dp(220), Math.round(width * 0.34f)));
     }
 
     private int sliderValueWidth() {
         int width = getResources().getDisplayMetrics().widthPixels;
-        return Math.max(dp(58), Math.min(dp(78), Math.round(width * 0.14f)));
+        return Math.max(dp(74), Math.min(dp(120), Math.round(width * 0.18f)));
     }
 
     private View fullCheck(String label, boolean checked, String key) {
         CheckBox box = checkPlain(label, checked);
         box.setPadding(0, dp(2), 0, dp(2));
-        box.setTextSize(TypedValue.COMPLEX_UNIT_PX, 16 * uiScale());
+        box.setTextSize(TypedValue.COMPLEX_UNIT_PX, 17 * uiScale());
         box.setLineSpacing(0, 1.0f);
         box.setSingleLine(false);
         box.setOnCheckedChangeListener((button, isChecked) -> settings.set(key, isChecked));
@@ -916,7 +1501,7 @@ public final class MainActivity extends Activity {
             public View getView(int position, View convertView, android.view.ViewGroup parent) {
                 TextView view = (TextView) super.getView(position, convertView, parent);
                 view.setTextColor(TEXT);
-                view.setTextSize(TypedValue.COMPLEX_UNIT_PX, 19 * uiScale());
+                view.setTextSize(TypedValue.COMPLEX_UNIT_PX, 17 * uiScale());
                 view.setSingleLine(true);
                 return view;
             }
@@ -972,18 +1557,20 @@ public final class MainActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, dp(8), 0, dp(6));
         for (int color : SPEAKER_COLORS) {
+            boolean selected = selectedColor[0] == color;
             TextView dot = new TextView(this);
             GradientDrawable bg = new GradientDrawable();
             bg.setShape(GradientDrawable.OVAL);
             bg.setColor(color);
-            bg.setStroke(dp(selectedColor[0] == color ? 4 : 1), selectedColor[0] == color ? TEXT : BORDER);
+            bg.setStroke(dp(selected ? 3 : 1), selected ? TEXT : BORDER);
             dot.setBackground(bg);
             dot.setOnClickListener(v -> {
                 selectedColor[0] = color;
                 renderColorDots(row, selectedColor);
             });
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(34), dp(34));
-            params.setMargins(0, 0, dp(10), 0);
+            int size = selected ? dp(44) : dp(32);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(size, size);
+            params.setMargins(0, 0, dp(12), 0);
             row.addView(dot, params);
         }
     }
@@ -997,7 +1584,7 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout.LayoutParams actionButtonParams() {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, scaledTextHeight(17, 2, 46), 1f);
         params.rightMargin = dp(10);
         return params;
     }
@@ -1018,7 +1605,7 @@ public final class MainActivity extends Activity {
         CheckBox box = new CheckBox(this);
         box.setText(label);
         box.setTextColor(MUTED);
-        box.setTextSize(TypedValue.COMPLEX_UNIT_PX, 16 * uiScale());
+        box.setTextSize(TypedValue.COMPLEX_UNIT_PX, 17 * uiScale());
         box.setChecked(checked);
         box.setGravity(Gravity.CENTER_VERTICAL);
         if (Build.VERSION.SDK_INT >= 21) {
@@ -1035,17 +1622,45 @@ public final class MainActivity extends Activity {
         button.setAllCaps(false);
         button.setGravity(Gravity.CENTER);
         button.setPadding(dp(8), 0, dp(8), 0);
+        button.setSingleLine(false);
+        button.setMaxLines(2);
+        button.setIncludeFontPadding(true);
+        button.setLineSpacing(0, 1.0f);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
         button.setBackground(rounded(color, BORDER, 1, 5));
         button.setOnClickListener(listener);
         return button;
     }
 
     private TextView badge(String label) {
+        return badge(label, SUCCESS);
+    }
+
+    private TextView badge(String label, int color) {
         TextView badge = text(label, 16, true, TEXT);
         badge.setGravity(Gravity.CENTER);
         badge.setPadding(dp(12), 0, dp(12), 0);
-        badge.setBackground(rounded(SUCCESS, SUCCESS, 1, 4));
+        badge.setBackground(rounded(color, color, 1, 4));
         return badge;
+    }
+
+    private TextView fileStatusBadge(NativeFileLibrary.LibraryItem item) {
+        if (library.hasResult(item.id) || NativeFileLibrary.STATUS_COMPLETE.equals(item.status)) {
+            return badge("Hoàn thành", SUCCESS);
+        }
+        if (NativeFileLibrary.STATUS_ERROR.equals(item.status)) {
+            return badge("Lỗi", DANGER);
+        }
+        if (NativeFileLibrary.STATUS_CANCELLED.equals(item.status)) {
+            return badge("Đã hủy", ELEVATED);
+        }
+        if (NativeFileLibrary.STATUS_PROCESSING.equals(item.status)) {
+            return badge("Đang xử lý", PRIMARY);
+        }
+        return badge("Sẵn sàng", ELEVATED);
     }
 
     private LinearLayout panel() {
@@ -1095,6 +1710,15 @@ public final class MainActivity extends Activity {
         return layoutScale() * (settings == null ? 120f : settings.uiTextScalePercent()) / 100f;
     }
 
+    private int topBarHeight() {
+        return Math.max(dp(78), scaledTextHeight(17, 2, 68) + dp(10));
+    }
+
+    private int scaledTextHeight(int sp, int lines, int minDp) {
+        int safeLines = Math.max(1, lines);
+        return Math.max(dp(minDp), Math.round(sp * uiScale() * 1.35f * safeLines + dp(8)));
+    }
+
     private float layoutScale() {
         return Math.max(1f, Math.min(1.22f, getResources().getDisplayMetrics().widthPixels / 720f));
     }
@@ -1121,17 +1745,31 @@ public final class MainActivity extends Activity {
     }
 
     private void openHotwordDialog() {
+        if (hotwordPanel != null && hotwordPanel.getParent() != null && hotwordPanel.getVisibility() == View.VISIBLE) {
+            hotwordPanel.bringToFront();
+            return;
+        }
+        if (hotwordPanel != null && hotwordPanel.getParent() != null) {
+            rootFrame.removeView(hotwordPanel);
+            hotwordPanel = null;
+        }
+
         LinearLayout root = vertical();
-        root.setPadding(dp(14), dp(12), dp(14), dp(12));
-        root.setBackground(rounded(CARD, BORDER, 1, 8));
+        root.setPadding(dp(14), dp(12) + statusBarHeight(), dp(14), dp(12));
+        root.setBackground(rounded(CARD, BORDER, 1, 0));
 
         activeHotwordItems = parseHotwordItems(settings.hotwordsText());
 
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
         TextView panelTitle = text("Quản lý hotword.txt", 22, true, TEXT);
-        panelTitle.setPadding(dp(4), 0, dp(4), dp(10));
-        root.addView(panelTitle, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(46)));
+        header.addView(panelTitle, new LinearLayout.LayoutParams(0, dp(54), 1f));
+        TextView close = text("×", 34, true, MUTED);
+        close.setGravity(Gravity.CENTER);
+        close.setOnClickListener(v -> closeHotwordPanel(false));
+        header.addView(close, new LinearLayout.LayoutParams(dp(52), dp(54)));
+        root.addView(header);
 
         LinearLayout addRow = new LinearLayout(this);
         addRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -1180,20 +1818,17 @@ public final class MainActivity extends Activity {
         scroll.addView(activeHotwordList);
         root.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(360)));
+                0,
+                1f));
         renderHotwordRows();
 
-        final AlertDialog[] dialogRef = new AlertDialog[1];
         LinearLayout footer = new LinearLayout(this);
         footer.setOrientation(LinearLayout.HORIZONTAL);
         footer.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         footer.setPadding(0, dp(10), 0, 0);
-        Button cancel = button("Hủy", INPUT, v -> {
-            if (dialogRef[0] != null) dialogRef[0].dismiss();
-        });
+        Button cancel = button("Hủy", INPUT, v -> closeHotwordPanel(false));
         Button save = button("Lưu", PRIMARY, v -> {
-            settings.setHotwordsText(buildHotwordsText(activeHotwordItems));
-            if (dialogRef[0] != null) dialogRef[0].dismiss();
+            closeHotwordPanel(true);
         });
         footer.addView(cancel, new LinearLayout.LayoutParams(dp(120), dp(46)));
         LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(dp(120), dp(46));
@@ -1201,19 +1836,45 @@ public final class MainActivity extends Activity {
         footer.addView(save, saveParams);
         root.addView(footer);
 
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setView(root)
-                .create();
-        dialogRef[0] = dialog;
-        dialog.setOnDismissListener(d -> {
-            clearActiveHotwordDialogState();
-        });
-        dialog.show();
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        hotwordPanel = root;
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int panelWidth = screenWidth < dp(900)
+                ? (int) (screenWidth * 0.95f)
+                : Math.min(dp(640), (int) (screenWidth * 0.95f));
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                panelWidth,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.RIGHT);
+        if (hotwordScrim != null) {
+            hotwordScrim.setVisibility(View.VISIBLE);
+            hotwordScrim.bringToFront();
         }
-        addInput.requestFocus();
+        if (contentScrollbar != null) contentScrollbar.setVisibility(View.GONE);
+        rootFrame.addView(hotwordPanel, params);
+        hotwordPanel.bringToFront();
+        hotwordPanel.setTranslationX(panelWidth);
+        hotwordPanel.animate().translationX(0).setDuration(190).setInterpolator(new DecelerateInterpolator()).start();
+        if (fixedPlayerView != null) fixedPlayerView.setVisibility(View.GONE);
+    }
+
+    private void closeHotwordPanel(boolean save) {
+        if (save && activeHotwordItems != null) {
+            settings.setHotwordsText(buildHotwordsText(activeHotwordItems));
+        }
+        if (hotwordPanel == null || hotwordPanel.getParent() == null) {
+            if (hotwordScrim != null) hotwordScrim.setVisibility(View.GONE);
+            clearActiveHotwordDialogState();
+            return;
+        }
+        View closing = hotwordPanel;
+        closing.animate().translationX(closing.getWidth()).setDuration(160).withEndAction(() -> {
+            if (closing.getParent() != null) rootFrame.removeView(closing);
+            if (hotwordPanel == closing) hotwordPanel = null;
+            if (hotwordScrim != null) hotwordScrim.setVisibility(View.GONE);
+            clearActiveHotwordDialogState();
+            if (fixedPlayerView != null && mediaPlayer != null) fixedPlayerView.setVisibility(View.VISIBLE);
+            updateContentScrollbar();
+        }).start();
     }
 
     private EditText darkSingleLineInput(String hint) {
@@ -1444,11 +2105,86 @@ public final class MainActivity extends Activity {
         if (selectedUri == null) return;
         int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
         if (flags != 0) getContentResolver().takePersistableUriPermission(selectedUri, flags);
+        discardStagedInputFile();
         selectedLibraryItemId = null;
         updateSelectedFileUi(displayName(selectedUri), -1);
         prepareMediaPlayer(selectedUri);
         clearTranscript();
         appendLog("Selected: " + selectedUri);
+    }
+
+    private void handleIncomingFileIntent(Intent intent) {
+        if (intent == null) return;
+        Uri uri = incomingFileUri(intent);
+        if (uri == null) return;
+        try {
+            Log.d(TAG, "Incoming shared file: " + uri);
+            String name = displayName(uri);
+            File staged = stageIncomingFile(uri, name);
+            discardStagedInputFile();
+            selectedStagedInputFile = staged;
+            selectedUri = Uri.fromFile(staged);
+            selectedLibraryItemId = null;
+            updateSelectedFileUi(name, staged.length());
+            prepareMediaPlayer(selectedUri);
+            clearTranscript();
+            appendLog("Received shared file: " + name);
+        } catch (Exception error) {
+            Log.e(TAG, "Receive shared file failed", error);
+            appendLog("Receive shared file failed: " + error.getMessage());
+        }
+    }
+
+    private boolean isProcessingActive() {
+        return activeProcessingItemId != null
+                || (progressContainer != null && progressContainer.getVisibility() == View.VISIBLE);
+    }
+
+    private Uri incomingFileUri(Intent intent) {
+        String action = intent.getAction();
+        if (Intent.ACTION_SEND.equals(action)) {
+            Object stream = intent.getExtras() == null ? null : intent.getExtras().get(Intent.EXTRA_STREAM);
+            if (stream instanceof Uri) return (Uri) stream;
+            if (stream instanceof String) return Uri.parse((String) stream);
+        }
+        if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            Object streams = intent.getExtras() == null ? null : intent.getExtras().get(Intent.EXTRA_STREAM);
+            if (streams instanceof ArrayList && !((ArrayList<?>) streams).isEmpty()) {
+                Object first = ((ArrayList<?>) streams).get(0);
+                if (first instanceof Uri) return (Uri) first;
+                if (first instanceof String) return Uri.parse((String) first);
+            }
+        }
+        if (Intent.ACTION_VIEW.equals(action)) {
+            Uri data = intent.getData();
+            if (data != null) return data;
+        }
+        ClipData clip = intent.getClipData();
+        if (clip != null && clip.getItemCount() > 0) return clip.getItemAt(0).getUri();
+        return null;
+    }
+
+    private File stageIncomingFile(Uri uri, String displayName) throws Exception {
+        File inbox = new File(getFilesDir(), "inbox");
+        if (!inbox.exists() && !inbox.mkdirs()) throw new IllegalStateException("Cannot create inbox directory.");
+        File target = new File(inbox, "incoming_" + System.currentTimeMillis() + extensionOf(displayName));
+        try (InputStream input = getContentResolver().openInputStream(uri);
+             FileOutputStream output = new FileOutputStream(target)) {
+            if (input == null) throw new IllegalStateException("Cannot open shared file.");
+            byte[] buffer = new byte[1024 * 1024];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                output.write(buffer, 0, read);
+            }
+        }
+        return target;
+    }
+
+    private void discardStagedInputFile() {
+        if (selectedStagedInputFile != null && selectedStagedInputFile.isFile()) {
+            selectedStagedInputFile.delete();
+        }
+        selectedStagedInputFile = null;
     }
 
     private String readTextUri(Uri uri) throws Exception {
@@ -1481,6 +2217,15 @@ public final class MainActivity extends Activity {
         return uri.getLastPathSegment() == null ? "selected file" : new File(uri.getLastPathSegment()).getName();
     }
 
+    private String extensionOf(String name) {
+        if (name == null) return ".bin";
+        int slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        int dot = name.lastIndexOf('.');
+        if (dot <= slash || dot < 0 || dot == name.length() - 1) return ".bin";
+        String ext = name.substring(dot).replaceAll("[^A-Za-z0-9.]", "");
+        return ext.isEmpty() ? ".bin" : ext.toLowerCase(Locale.US);
+    }
+
     private void updateSelectedFileUi(String name, long size) {
         selectedDisplayName = name;
         selectedFileSizeBytes = size;
@@ -1498,8 +2243,12 @@ public final class MainActivity extends Activity {
     }
 
     private void clearSelectedFile() {
+        if (ProcessingForegroundService.isProcessing()) {
+            cancelProcessing();
+        }
         selectedUri = null;
         selectedLibraryItemId = null;
+        discardStagedInputFile();
         updateSelectedFileUi(null, 0);
         releaseMediaPlayer();
         clearTranscript();
@@ -1509,15 +2258,20 @@ public final class MainActivity extends Activity {
 
     private void openLibraryItem(NativeFileLibrary.LibraryItem item) {
         closeDrawer();
+        discardStagedInputFile();
         selectedLibraryItemId = item.id;
         selectedUri = Uri.fromFile(item.sourceFile);
-        updateSelectedFileUi(item.displayName, item.sourceFile.length());
+        updateSelectedFileUi(item.originalName, item.sourceFile.length());
         prepareMediaPlayer(selectedUri);
         if (progressContainer != null) progressContainer.setVisibility(View.GONE);
         try {
             String json = library.readResult(item.id);
             if (json != null && !json.trim().isEmpty()) {
                 renderTranscriptFromJson(json);
+            } else if (NativeFileLibrary.STATUS_PROCESSING.equals(item.status)) {
+                clearTranscript();
+                if (resultPanelView != null) resultPanelView.setVisibility(View.GONE);
+                resumeLibraryItemInForeground(item);
             } else {
                 clearTranscript();
                 if (resultPanelView != null) resultPanelView.setVisibility(View.GONE);
@@ -1546,6 +2300,7 @@ public final class MainActivity extends Activity {
         }
         settings.set("diarization", true);
         File file = new File(debugInputPath);
+        discardStagedInputFile();
         selectedUri = Uri.fromFile(file);
         selectedLibraryItemId = null;
         updateSelectedFileUi(file.getName(), file.length());
@@ -1557,7 +2312,7 @@ public final class MainActivity extends Activity {
         } else if (intent.getBooleanExtra("debug_dump_only", false)) {
             rootFrame.postDelayed(this::debugDumpSelectedFile, 500);
         } else {
-            rootFrame.postDelayed(this::processSelectedFile, 500);
+            rootFrame.postDelayed(() -> startProcessingSelectedFile(null), 500);
         }
         clearDebugIntentExtras(intent);
     }
@@ -1624,6 +2379,66 @@ public final class MainActivity extends Activity {
             appendLog("No file selected.");
             return;
         }
+
+        String fallbackName = baseNameForDisplay(selectedDisplayName);
+        EditText input = darkSingleLineInput(fallbackName);
+        input.setText(fallbackName);
+        input.selectAll();
+
+        LinearLayout body = vertical();
+        body.setPadding(dp(22), dp(18), dp(22), dp(18));
+        body.setBackground(rounded(CARD, BORDER, 1, 8));
+        TextView title = text("Đặt tên kết quả", 22, true, TEXT);
+        title.setPadding(0, 0, 0, dp(12));
+        body.addView(title);
+        TextView label = text("Tên cuộc họp / tập tin:", 17, false, MUTED);
+        label.setPadding(0, 0, 0, dp(8));
+        body.addView(label);
+        body.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(48)));
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.RIGHT);
+        actions.setPadding(0, dp(16), 0, 0);
+        Button cancel = button("Hủy", INPUT, v -> {
+            if (holder[0] != null) holder[0].dismiss();
+        });
+        Button run = button("Xử lý", PRIMARY, v -> {
+            String requestedName = input.getText() == null ? "" : input.getText().toString();
+            if (holder[0] != null) holder[0].dismiss();
+            startProcessingSelectedFile(requestedName);
+        });
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        actionParams.rightMargin = dp(8);
+        actions.addView(cancel, actionParams);
+        LinearLayout.LayoutParams runParams = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        actions.addView(run, runParams);
+        body.addView(actions);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(body)
+                .create();
+        holder[0] = dialog;
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        }
+        input.requestFocus();
+        window = dialog.getWindow();
+        if (window != null) {
+            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        }
+    }
+
+    private void startProcessingSelectedFile(String requestedDisplayName) {
+        if (selectedUri == null) {
+            appendLog("No file selected.");
+            return;
+        }
         if (!allBundledModelsReady()) {
             appendLog("Một số model offline bị thiếu trong APK. Hãy cài lại bản full-model.");
         }
@@ -1633,8 +2448,61 @@ public final class MainActivity extends Activity {
         clearTranscript();
         if (resultPanelView != null) resultPanelView.setVisibility(View.GONE);
         setProgress("Reading input", 2);
-        appendLog("Processing started.");
-        pipeline.importFile(selectedUri, new NativeOfflinePipeline.ProgressListener() {
+        appendLog("Processing started in foreground service.");
+        activeProcessingItemId = selectedLibraryItemId;
+        Intent service = new Intent(this, ProcessingForegroundService.class)
+                .setAction(ProcessingForegroundService.ACTION_START)
+                .setData(selectedUri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .putExtra(ProcessingForegroundService.EXTRA_DISPLAY_NAME, normalizeRequestedDisplayName(requestedDisplayName));
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(service);
+        } else {
+            startService(service);
+        }
+    }
+
+    private void resumeLibraryItemInForeground(NativeFileLibrary.LibraryItem item) {
+        if (item == null) return;
+        activeProcessingItemId = item.id;
+        setProgress("Resume", 3);
+        appendLog("Resuming from library: " + item.displayName);
+        Intent service = new Intent(this, ProcessingForegroundService.class)
+                .setAction(ProcessingForegroundService.ACTION_RESUME)
+                .putExtra(ProcessingForegroundService.EXTRA_ITEM_ID, item.id);
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(service);
+        } else {
+            startService(service);
+        }
+    }
+
+    private void cancelProcessing() {
+        activeProcessingItemId = null;
+        Intent service = new Intent(this, ProcessingForegroundService.class)
+                .setAction(ProcessingForegroundService.ACTION_CANCEL);
+        startService(service);
+        setProgress("Đang hủy", 99);
+    }
+
+    private void resumeInterruptedJobIfNeeded() {
+        if (ProcessingForegroundService.isProcessing()) return;
+        if (selectedUri != null || !settings.resumeAfterKill()) return;
+        NativeFileLibrary.LibraryItem item = library.latestProcessingItem();
+        if (item == null) return;
+        selectedLibraryItemId = item.id;
+        selectedUri = Uri.fromFile(item.sourceFile);
+        updateSelectedFileUi(item.originalName, item.sourceFile.length());
+        prepareMediaPlayer(selectedUri);
+        clearTranscript();
+        if (resultPanelView != null) resultPanelView.setVisibility(View.GONE);
+        setProgress("Resume", 3);
+        appendLog("Resuming interrupted job: " + item.displayName);
+        pipeline.resumeLibraryItem(item.id, processingListener());
+    }
+
+    private NativeOfflinePipeline.ProgressListener processingListener() {
+        return new NativeOfflinePipeline.ProgressListener() {
             @Override
             public void onProgress(String phase, int percent, String message) {
                 runOnUiThread(() -> {
@@ -1653,7 +2521,11 @@ public final class MainActivity extends Activity {
             ) {
                 Log.d(TAG, "Pipeline complete: " + item.id + ", resultJson=" + resultJson.length());
                 runOnUiThread(() -> {
+                    discardStagedInputFile();
                     selectedLibraryItemId = item.id;
+                    selectedUri = Uri.fromFile(item.sourceFile);
+                    updateSelectedFileUi(item.originalName, item.sourceFile.length());
+                    prepareMediaPlayer(selectedUri);
                     try {
                         renderTranscriptFromJson(resultJson);
                     } catch (Exception parseError) {
@@ -1674,7 +2546,22 @@ public final class MainActivity extends Activity {
                     refreshLibraryList();
                 });
             }
-        });
+        };
+    }
+
+    private String normalizeRequestedDisplayName(String value) {
+        String trimmed = value == null ? "" : value.replace('\r', ' ').replace('\n', ' ').trim();
+        return trimmed.isEmpty() ? baseNameForDisplay(selectedDisplayName) : trimmed;
+    }
+
+    private String baseNameForDisplay(String name) {
+        if (name == null || name.trim().isEmpty()) return "Tập tin";
+        String value = name.trim();
+        int slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+        if (slash >= 0 && slash < value.length() - 1) value = value.substring(slash + 1);
+        int dot = value.lastIndexOf('.');
+        if (dot > 0) value = value.substring(0, dot);
+        return value.isEmpty() ? "Tập tin" : value;
     }
 
     private void showInitialModelDownloadPromptIfNeeded() {
@@ -1802,9 +2689,15 @@ public final class MainActivity extends Activity {
         } else {
             mediaPlayer.seekTo(targetMs);
         }
-        if (!mediaPlayer.isPlaying()) mediaPlayer.start();
-        updateActiveSegment(targetMs / 1000.0, true);
+        updateActiveSegment(targetMs / 1000.0, false);
         updatePlayerTime();
+    }
+
+    private double segmentStartSeconds(int segmentIndex) {
+        if (segmentIndex >= 0 && segmentIndex < editorSegments.size()) {
+            return Math.max(0.0, editorSegments.get(segmentIndex).start);
+        }
+        return 0.0;
     }
 
     private int activeSegmentAtTime(double seconds) {
@@ -1833,6 +2726,7 @@ public final class MainActivity extends Activity {
             return;
         }
         activeSegmentIndex = index;
+        activeWordIndex = -1;
         renderEditorTranscript();
         if (allowScroll) scrollActiveSegmentIntoView();
     }
@@ -1855,14 +2749,158 @@ public final class MainActivity extends Activity {
 
     private void clearTranscript() {
         currentTranscriptText = "";
+        currentQualityInfoJson = null;
+        currentTimingJson = null;
+        currentAudioSummaryJson = null;
         editorSegments.clear();
         editorSpeakers.clear();
         activeSegmentIndex = -1;
+        activeWordIndex = -1;
+        renderResultMetadata(null);
         if (transcriptRoot == null) return;
         transcriptRoot.removeAllViews();
         transcriptEmptyView = text("Chưa có nội dung. Chọn file và bấm Xử lý để hiển thị transcript tại đây.", 16, false, MUTED);
         transcriptEmptyView.setPadding(dp(10), dp(8), dp(10), dp(8));
         transcriptRoot.addView(transcriptEmptyView);
+        updateContentScrollbar();
+    }
+
+    private void renderResultMetadata(JSONObject json) {
+        if (json == null) {
+            if (qualityStripView != null) qualityStripView.setVisibility(View.GONE);
+            if (audioSummaryView != null) audioSummaryView.setVisibility(View.GONE);
+            if (resultTimingView != null) resultTimingView.setVisibility(View.GONE);
+            return;
+        }
+        renderQualityStrip(json.optJSONObject("quality_info"));
+        renderAudioSummary(json.optJSONArray("audio_summary"));
+        renderResultTiming(json.optJSONObject("timing"));
+    }
+
+    private void renderQualityStrip(JSONObject quality) {
+        if (qualityStripView == null) return;
+        qualityStripView.removeAllViews();
+        if (quality == null) {
+            qualityStripView.setVisibility(View.GONE);
+            return;
+        }
+        SpannableStringBuilder line = new SpannableStringBuilder("Chất lượng:");
+        int itemCount = 0;
+        itemCount += appendQualityItem(line, itemCount, quality, "dnsmos_sig", "Giọng nói", true);
+        itemCount += appendQualityItem(line, itemCount, quality, "dnsmos_bak", "Nhiễu nền", true);
+        itemCount += appendQualityItem(line, itemCount, quality, "dnsmos_ovrl", "Tổng thể", true);
+        itemCount += appendQualityItem(line, itemCount, quality, "asr_confidence", "Mức độ tự tin dịch chính xác", false);
+        if (itemCount == 0) {
+            qualityStripView.setVisibility(View.GONE);
+            return;
+        }
+        TextView text = text("", 14, true, MUTED);
+        text.setText(line);
+        text.setSingleLine(false);
+        text.setLineSpacing(dp(1), 1.0f);
+        qualityStripView.addView(text, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        qualityStripView.setVisibility(View.VISIBLE);
+    }
+
+    private int appendQualityItem(
+            SpannableStringBuilder line,
+            int index,
+            JSONObject quality,
+            String key,
+            String label,
+            boolean dnsScore
+    ) {
+        if (!quality.has(key)) return 0;
+        double score = quality.optDouble(key, Double.NaN);
+        if (!Double.isFinite(score)) return 0;
+        line.append(index == 0 ? " " : " · ");
+        line.append(label).append(' ');
+        String value = dnsScore
+                ? String.format(Locale.US, "%.1f/5", score)
+                : String.format(Locale.US, "%.1f%%", score * 100.0);
+        int start = line.length();
+        line.append(value);
+        int color = dnsScore ? dnsmosColor(score) : confidenceColor(score);
+        line.setSpan(new ForegroundColorSpan(color), start, line.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return 1;
+    }
+
+    private int dnsmosColor(double score) {
+        if (score >= 4.0) return Color.rgb(40, 167, 69);
+        if (score >= 3.0) return Color.rgb(92, 184, 92);
+        if (score >= 2.0) return Color.rgb(255, 193, 7);
+        return DANGER;
+    }
+
+    private int confidenceColor(double score) {
+        if (score >= 0.80) return Color.rgb(40, 167, 69);
+        if (score >= 0.60) return Color.rgb(255, 193, 7);
+        return DANGER;
+    }
+
+    private void renderAudioSummary(JSONArray items) {
+        if (audioSummaryView == null) return;
+        audioSummaryView.removeAllViews();
+        audioSummaryView.setVisibility(View.GONE);
+    }
+
+    private LinearLayout.LayoutParams summaryTileParams(boolean left) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        params.setMargins(left ? 0 : dp(4), dp(3), left ? dp(4) : 0, dp(3));
+        return params;
+    }
+
+    private View summaryTile(JSONObject item) {
+        LinearLayout tile = vertical();
+        tile.setPadding(dp(8), dp(5), dp(8), dp(5));
+        tile.setBackground(rounded(INPUT, BORDER, 1, 4));
+        String label = item == null ? "" : item.optString("label", "");
+        String value = item == null ? "" : item.optString("value", "");
+        TextView labelView = text(label, 12, false, MUTED);
+        labelView.setSingleLine(false);
+        TextView valueView = text(value, 14, true, TEXT);
+        valueView.setSingleLine(false);
+        valueView.setLineSpacing(0, 0.95f);
+        tile.addView(labelView);
+        tile.addView(valueView);
+        return tile;
+    }
+
+    private void renderResultTiming(JSONObject timing) {
+        if (resultTimingView == null) return;
+        resultTimingView.removeAllViews();
+        if (timing == null) {
+            resultTimingView.setVisibility(View.GONE);
+            return;
+        }
+        String[][] labels = new String[][]{
+                {"preprocessing", "PreProcessing"},
+                {"transcription_detail", "ASR"},
+                {"diarization", "Phân tách người nói"},
+                {"punctuation", "Dấu câu"},
+                {"overlap_separation", "Tách overlap"},
+                {"total", "Tổng thời gian"}
+        };
+        StringBuilder out = new StringBuilder();
+        for (String[] item : labels) {
+            double value = timing.optDouble(item[0], 0.0);
+            if (!Double.isFinite(value) || value <= 0.0) continue;
+            if (out.length() > 0) out.append("  ·  ");
+            out.append(item[1]).append(": ").append(String.format(Locale.US, "%.1fs", value));
+        }
+        if (out.length() == 0) {
+            resultTimingView.setVisibility(View.GONE);
+            return;
+        }
+        TextView text = text(out.toString(), 13, true, MUTED);
+        text.setSingleLine(false);
+        text.setLineSpacing(dp(1), 1.0f);
+        resultTimingView.addView(text, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        resultTimingView.setVisibility(View.VISIBLE);
     }
 
     private void renderTranscript(PureOrtRecognizer.DecodeResult asr, DiarizationResult diarization) {
@@ -1884,6 +2922,13 @@ public final class MainActivity extends Activity {
         JSONObject json = new JSONObject(jsonText);
         currentDurationSeconds = json.optDouble("duration_sec", mediaPlayer == null ? 0 : mediaPlayer.getDuration() / 1000.0);
         currentTranscriptText = json.optString("text", "");
+        JSONObject qualityInfo = json.optJSONObject("quality_info");
+        JSONObject timingInfo = json.optJSONObject("timing");
+        JSONArray audioSummary = json.optJSONArray("audio_summary");
+        currentQualityInfoJson = qualityInfo == null ? null : qualityInfo.toString();
+        currentTimingJson = timingInfo == null ? null : timingInfo.toString();
+        currentAudioSummaryJson = audioSummary == null ? null : audioSummary.toString();
+        renderResultMetadata(json);
         editorSegments.clear();
         editorSpeakers.clear();
 
@@ -1915,7 +2960,8 @@ public final class MainActivity extends Activity {
                         item.optDouble("start_time", item.optDouble("start", 0)),
                         item.optDouble("end_time", item.optDouble("end", 0)),
                         item.optString("text", ""),
-                        speaker);
+                        speaker,
+                        item.optJSONArray("raw_words"));
                 speakerMeta(speaker);
                 applySavedSpeakerColor(speaker, colors);
             }
@@ -1980,6 +3026,30 @@ public final class MainActivity extends Activity {
     }
 
     private void addTextSegmentMaybeSplit(double start, double end, String text, int speaker) {
+        addTextSegmentMaybeSplit(start, end, text, speaker, null);
+    }
+
+    private void addTextSegmentMaybeSplit(double start, double end, String text, int speaker, JSONArray rawWords) {
+        if (rawWords != null && rawWords.length() > 0) {
+            List<TimedWord> timedWords = new ArrayList<>();
+            for (int i = 0; i < rawWords.length(); i++) {
+                JSONObject word = rawWords.optJSONObject(i);
+                if (word == null) continue;
+                timedWords.add(new TimedWord(
+                        word.optString("text", ""),
+                        word.optDouble("start", start),
+                        word.optDouble("end", start)));
+            }
+            if (!timedWords.isEmpty()) {
+                int cursor = 0;
+                while (cursor < timedWords.size()) {
+                    int next = Math.min(timedWords.size(), cursor + 32);
+                    editorSegments.add(segmentFromWords(timedWords.subList(cursor, next), speaker));
+                    cursor = next;
+                }
+                return;
+            }
+        }
         String[] words = text == null ? new String[0] : text.trim().split("\\s+");
         if (words.length <= 40) {
             editorSegments.add(new EditorSegment(start, Math.max(start + 0.01, end), text, speaker));
@@ -2199,9 +3269,7 @@ public final class MainActivity extends Activity {
         block.setTag("segment-block-" + startIndex);
         block.setFocusable(false);
         block.setPadding(dp(10), dp(6), dp(10), dp(8));
-        GradientDrawable bg = rounded(activeBlock ? Color.rgb(78, 78, 78) : ELEVATED, BORDER, 1, 4);
-        bg.setStroke(dp(activeBlock ? 4 : 3), meta.color);
-        block.setBackground(bg);
+        block.setBackground(rounded(activeBlock ? Color.rgb(78, 78, 78) : ELEVATED, BORDER, 1, 4));
         block.setOnLongClickListener(v -> {
             showSegmentActions(activeBlock ? activeSegmentIndex : startIndex);
             return true;
@@ -2209,23 +3277,44 @@ public final class MainActivity extends Activity {
 
         TextView speaker = text(meta.name + ":", 17, true, meta.color);
         speaker.setPadding(0, 0, 0, dp(2));
+        speaker.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        speaker.setTextAlignment(View.TEXT_ALIGNMENT_TEXT_START);
         speaker.setOnClickListener(v -> showRenameDialog(speakerId, false, startIndex));
         block.addView(speaker, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         TextView content = text("", 17, false, TEXT);
-        content.setLineSpacing(0, 0.96f);
+        content.setGravity(Gravity.FILL_HORIZONTAL | Gravity.TOP);
+        content.setTextAlignment(View.TEXT_ALIGNMENT_TEXT_START);
+        content.setLineSpacing(dp(3), 1.04f);
+        if (Build.VERSION.SDK_INT >= 26) {
+            content.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD);
+            content.setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY);
+            content.setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE);
+        }
         content.setText(segmentSpans(startIndex, endIndex));
         content.setMovementMethod(LinkMovementMethod.getInstance());
-        content.setHighlightColor(Color.argb(45, 0, 123, 255));
+        content.setHighlightColor(HIGHLIGHT_BG);
         content.setTextIsSelectable(false);
         content.setFocusable(false);
         content.setFocusableInTouchMode(false);
+        content.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                selectSpanUnderTouch((TextView) v, event);
+            }
+            return false;
+        });
         content.setOnLongClickListener(v -> {
-            showSegmentActions(activeBlock ? activeSegmentIndex : startIndex);
+            int target = activeSegmentIndex >= startIndex && activeSegmentIndex <= endIndex
+                    ? activeSegmentIndex
+                    : startIndex;
+            showSegmentActions(target);
             return true;
         });
-        block.addView(content);
+        block.addView(content, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         return withMargins(block, 0, 0, 0, 8);
     }
 
@@ -2233,38 +3322,192 @@ public final class MainActivity extends Activity {
         SpannableStringBuilder builder = new SpannableStringBuilder();
         for (int i = startIndex; i <= endIndex; i++) {
             EditorSegment segment = editorSegments.get(i);
-            appendSeekSpan(builder, segment.text, segment.start, i, i == activeSegmentIndex);
-            builder.append(' ');
+            boolean activeSegment = i == activeSegmentIndex;
+            int segmentStart = builder.length();
+            if (segment.words != null && !segment.words.isEmpty()) {
+                for (int wordIndex = 0; wordIndex < segment.words.size(); wordIndex++) {
+                    TimedWord word = segment.words.get(wordIndex);
+                    appendSeekSpan(
+                            builder,
+                            word.text,
+                            finiteOr(word.start, segment.start),
+                            i,
+                            wordIndex,
+                            activeSegment);
+                    builder.append(' ');
+                }
+            } else {
+                appendSeekSpan(builder, segment.text, segment.start, i, -1, activeSegment);
+                builder.append(' ');
+            }
+            int segmentEnd = builder.length();
+            if (activeSegment && segmentEnd > segmentStart) {
+                builder.setSpan(new android.text.style.BackgroundColorSpan(HIGHLIGHT_BG),
+                        segmentStart,
+                        segmentEnd,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
         }
         return builder;
     }
 
-    private void appendSeekSpan(SpannableStringBuilder builder, String value, double seconds, int segmentIndex, boolean active) {
+    private void appendSeekSpan(SpannableStringBuilder builder, String value, double seconds, int segmentIndex, int wordIndex, boolean active) {
         int start = builder.length();
         builder.append(value == null ? "" : value);
         int end = builder.length();
-        builder.setSpan(new ClickableSpan() {
-            @Override
-            public void onClick(View widget) {
-                activeSegmentIndex = segmentIndex;
-                renderEditorTranscript();
-                scrollActiveSegmentIntoView();
-                seekTo(seconds);
-            }
+        if (end <= start) return;
+        builder.setSpan(new WordSeekSpan(seconds, segmentIndex, wordIndex, active),
+                start,
+                end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    }
 
-            @Override
-            public void updateDrawState(TextPaint ds) {
-                super.updateDrawState(ds);
-                ds.setColor(TEXT);
-                ds.setUnderlineText(false);
+    private void selectTranscriptTarget(int segmentIndex, int wordIndex) {
+        if (segmentIndex < 0 || segmentIndex >= editorSegments.size()) return;
+        activeSegmentIndex = segmentIndex;
+        activeWordIndex = wordIndex >= 0 ? wordIndex : -1;
+    }
+
+    private boolean selectSpanUnderTouch(TextView view, MotionEvent event) {
+        CharSequence text = view.getText();
+        if (!(text instanceof Spanned) || view.getLayout() == null) return false;
+        int x = (int) event.getX() - view.getTotalPaddingLeft() + view.getScrollX();
+        int y = (int) event.getY() - view.getTotalPaddingTop() + view.getScrollY();
+        Layout layout = view.getLayout();
+        int line = layout.getLineForVertical(Math.max(0, y));
+        int offset = layout.getOffsetForHorizontal(line, Math.max(0, x));
+        Spanned spanned = (Spanned) text;
+        WordSeekSpan[] spans = spanned.getSpans(offset, offset, WordSeekSpan.class);
+        if (spans.length == 0 && offset > 0) {
+            spans = spanned.getSpans(offset - 1, offset - 1, WordSeekSpan.class);
+        }
+        if (spans.length == 0) return false;
+        selectTranscriptTarget(spans[0].segmentIndex, spans[0].wordIndex);
+        return true;
+    }
+
+    private SegmentSplit splitSegmentAtWordBoundary(int segmentIndex, int wordBoundary) {
+        if (segmentIndex < 0 || segmentIndex >= editorSegments.size()) {
+            return new SegmentSplit(segmentIndex, segmentIndex);
+        }
+        EditorSegment segment = editorSegments.get(segmentIndex);
+        int count = wordCountForSegment(segment);
+        int boundary = Math.max(0, Math.min(count, wordBoundary));
+        if (boundary <= 0) return new SegmentSplit(segmentIndex - 1, segmentIndex);
+        if (boundary >= count) return new SegmentSplit(segmentIndex, segmentIndex + 1);
+
+        EditorSegment prefix;
+        EditorSegment suffix;
+        if (segment.words != null && !segment.words.isEmpty()) {
+            double splitTime = splitTimeForWordBoundary(segment, boundary, -1);
+            prefix = segmentFromWords(segment.words.subList(0, boundary), segment.speaker, segment.start, splitTime);
+            suffix = segmentFromWords(segment.words.subList(boundary, segment.words.size()), segment.speaker, splitTime, segment.end);
+        } else {
+            int charBoundary = charBoundaryForWordBoundary(segment.text, boundary);
+            int clippedBoundary = Math.max(0, Math.min(segment.text.length(), charBoundary));
+            String prefixText = segment.text.substring(0, clippedBoundary).trim();
+            String suffixText = segment.text.substring(clippedBoundary).trim();
+            if (prefixText.isEmpty() || suffixText.isEmpty()) {
+                return new SegmentSplit(segmentIndex, segmentIndex);
             }
-        }, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        int bg = active ? Color.argb(120, 0, 123, 255) : Color.TRANSPARENT;
-        builder.setSpan(new android.text.style.BackgroundColorSpan(bg), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            double splitTime = splitTimeForWordBoundary(segment, boundary, clippedBoundary);
+            prefix = new EditorSegment(segment.start, splitTime, prefixText, segment.speaker);
+            suffix = new EditorSegment(splitTime, segment.end, suffixText, segment.speaker);
+        }
+        editorSegments.remove(segmentIndex);
+        editorSegments.add(segmentIndex, suffix);
+        editorSegments.add(segmentIndex, prefix);
+        return new SegmentSplit(segmentIndex, segmentIndex + 1);
+    }
+
+    private int selectedWordBoundaryBefore(int wordIndex) {
+        return Math.max(0, wordIndex);
+    }
+
+    private int selectedWordBoundaryAfter(int wordIndex) {
+        return Math.max(1, wordIndex + 1);
+    }
+
+    private int wordCountForSegment(EditorSegment segment) {
+        if (segment.words != null && !segment.words.isEmpty()) return segment.words.size();
+        String text = segment.text == null ? "" : segment.text;
+        int count = 0;
+        boolean inWord = false;
+        for (int i = 0; i < text.length(); i++) {
+            if (Character.isWhitespace(text.charAt(i))) {
+                inWord = false;
+            } else if (!inWord) {
+                count++;
+                inWord = true;
+            }
+        }
+        return count;
+    }
+
+    private int charBoundaryForWordBoundary(String value, int boundary) {
+        String text = value == null ? "" : value;
+        if (boundary <= 0) return 0;
+        int count = 0;
+        boolean inWord = false;
+        for (int i = 0; i < text.length(); i++) {
+            if (Character.isWhitespace(text.charAt(i))) {
+                inWord = false;
+            } else if (!inWord) {
+                if (count == boundary) return i;
+                count++;
+                inWord = true;
+            }
+        }
+        return text.length();
+    }
+
+    private double splitTimeForWordBoundary(EditorSegment segment, int boundary, int charBoundary) {
+        if (segment.words != null && boundary >= 0 && boundary < segment.words.size()) {
+            double candidate = finiteOr(segment.words.get(boundary).start, Double.NaN);
+            if (Double.isFinite(candidate) && candidate > segment.start && candidate < segment.end) {
+                return candidate;
+            }
+        }
+        double ratio;
+        if (charBoundary >= 0) {
+            ratio = Math.max(0.0, Math.min(1.0, charBoundary / (double) Math.max(1, segment.text.length())));
+        } else {
+            ratio = Math.max(0.0, Math.min(1.0, boundary / (double) Math.max(1, wordCountForSegment(segment))));
+        }
+        double start = finiteOr(segment.start, 0.0);
+        double end = Math.max(start + 0.01, finiteOr(segment.end, start + 0.01));
+        return Math.max(start + 0.001, Math.min(end - 0.001, start + (end - start) * ratio));
+    }
+
+    private EditorSegment segmentFromWords(List<TimedWord> words, int speaker) {
+        List<TimedWord> copy = new ArrayList<>(words);
+        StringBuilder text = new StringBuilder();
+        double start = copy.isEmpty() ? 0.0 : finiteOr(copy.get(0).start, 0.0);
+        double end = start;
+        for (TimedWord word : copy) {
+            if (text.length() > 0) text.append(' ');
+            text.append(word.text);
+            end = Math.max(end, finiteOr(word.end, finiteOr(word.start, end)));
+        }
+        return new EditorSegment(start, end, text.toString(), speaker, copy);
+    }
+
+    private EditorSegment segmentFromWords(List<TimedWord> words, int speaker, double start, double end) {
+        List<TimedWord> copy = new ArrayList<>(words);
+        StringBuilder text = new StringBuilder();
+        for (TimedWord word : copy) {
+            if (text.length() > 0) text.append(' ');
+            text.append(word.text);
+        }
+        return new EditorSegment(start, Math.max(start + 0.01, end), text.toString(), speaker, copy);
     }
 
     private void showSegmentActions(int segmentIndex) {
         if (segmentIndex < 0 || segmentIndex >= editorSegments.size()) return;
+        if (activeSegmentIndex != segmentIndex) {
+            activeSegmentIndex = segmentIndex;
+            activeWordIndex = -1;
+        }
         String[] actions = new String[]{
                 "Tách/gán người nói từ chữ này",
                 "Gộp từ chữ này lên trên",
@@ -2356,7 +3599,7 @@ public final class MainActivity extends Activity {
         toEnd.setTextSize(TypedValue.COMPLEX_UNIT_PX, 17 * uiScale());
         RadioButton single = new RadioButton(this);
         single.setId(View.generateViewId());
-        single.setText("Chỉ đoạn này");
+        single.setText("Chỉ từ/đoạn đang chọn");
         single.setTextColor(Color.BLACK);
         single.setTextSize(TypedValue.COMPLEX_UNIT_PX, 17 * uiScale());
         scope.addView(toEnd);
@@ -2382,8 +3625,17 @@ public final class MainActivity extends Activity {
                                 selectedColor[0]));
                     }
                     speakerMeta(targetSpeaker).color = selectedColor[0];
-                    int end = scope.getCheckedRadioButtonId() == toEnd.getId() ? findBlockEnd(segmentIndex) : segmentIndex;
-                    for (int i = segmentIndex; i <= end; i++) editorSegments.get(i).speaker = targetSpeaker;
+                    int startIndex = segmentIndex;
+                    int selectedWord = activeSegmentIndex == segmentIndex ? activeWordIndex : -1;
+                    if (selectedWord >= 0) {
+                        SegmentSplit split = splitSegmentAtWordBoundary(segmentIndex, selectedWordBoundaryBefore(selectedWord));
+                        startIndex = split.afterIndex;
+                    }
+                    if (startIndex < 0 || startIndex >= editorSegments.size()) return;
+                    int end = scope.getCheckedRadioButtonId() == toEnd.getId() ? findBlockEnd(startIndex) : startIndex;
+                    for (int i = startIndex; i <= end; i++) editorSegments.get(i).speaker = targetSpeaker;
+                    activeSegmentIndex = startIndex;
+                    activeWordIndex = -1;
                     renderEditorTranscript();
                     saveEditedResult();
                 })
@@ -2522,9 +3774,37 @@ public final class MainActivity extends Activity {
         int neighbor = previous ? start - 1 : end + 1;
         if (neighbor < 0 || neighbor >= editorSegments.size()) return;
         int targetSpeaker = editorSegments.get(neighbor).speaker;
-        int from = previous ? start : index;
-        int to = previous ? index : end;
+        int selectedWord = activeSegmentIndex == index ? activeWordIndex : -1;
+        int from;
+        int to;
+        if (previous) {
+            from = start;
+            if (selectedWord >= 0) {
+                SegmentSplit split = splitSegmentAtWordBoundary(index, selectedWordBoundaryAfter(selectedWord));
+                to = split.beforeIndex;
+            } else {
+                to = index;
+            }
+        } else {
+            if (selectedWord >= 0) {
+                SegmentSplit split = splitSegmentAtWordBoundary(index, selectedWordBoundaryBefore(selectedWord));
+                from = split.afterIndex;
+                int blockEnd = from >= 0 && from < editorSegments.size() ? findBlockEnd(from) : from;
+                int currentNeighbor = blockEnd + 1;
+                if (currentNeighbor >= 0 && currentNeighbor < editorSegments.size()) {
+                    targetSpeaker = editorSegments.get(currentNeighbor).speaker;
+                }
+                to = blockEnd;
+            } else {
+                from = index;
+                to = end;
+            }
+        }
+        if (from < 0 || to < from || from >= editorSegments.size()) return;
+        to = Math.min(to, editorSegments.size() - 1);
         for (int i = from; i <= to; i++) editorSegments.get(i).speaker = targetSpeaker;
+        activeSegmentIndex = from;
+        activeWordIndex = -1;
         renderEditorTranscript();
         saveEditedResult();
     }
@@ -2533,7 +3813,7 @@ public final class MainActivity extends Activity {
         if (index < 0 || index >= editorSegments.size()) return;
         ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (clipboard != null) {
-            clipboard.setPrimaryClip(ClipData.newPlainText("ASR segment", editorSegments.get(index).text));
+            clipboard.setPrimaryClip(ClipData.newPlainText("ASR segment", formattedSegmentText(index)));
         }
     }
 
@@ -2544,6 +3824,45 @@ public final class MainActivity extends Activity {
             text.append(segment.text);
         }
         return text.toString().trim();
+    }
+
+    private String formattedSegmentText(int index) {
+        if (index < 0 || index >= editorSegments.size()) return "";
+        EditorSegment segment = editorSegments.get(index);
+        return speakerMeta(segment.speaker).name + ":\n"
+                + cleanSegmentText(segment.text);
+    }
+
+    private String formattedTranscriptText() {
+        if (editorSegments.isEmpty()) {
+            return currentTranscriptText == null ? "" : currentTranscriptText.trim();
+        }
+        StringBuilder text = new StringBuilder();
+        int start = 0;
+        while (start < editorSegments.size()) {
+            int speaker = editorSegments.get(start).speaker;
+            StringBuilder blockText = new StringBuilder();
+            int end = start;
+            while (end < editorSegments.size() && editorSegments.get(end).speaker == speaker) {
+                String segmentText = cleanSegmentText(editorSegments.get(end).text);
+                if (!segmentText.isEmpty()) {
+                    if (blockText.length() > 0) blockText.append(' ');
+                    blockText.append(segmentText);
+                }
+                end++;
+            }
+            if (blockText.length() > 0) {
+                if (text.length() > 0) text.append("\n\n");
+                text.append(speakerMeta(speaker).name).append(':').append('\n');
+                text.append(blockText);
+            }
+            start = end;
+        }
+        return text.toString().trim();
+    }
+
+    private String cleanSegmentText(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private void saveEditedResult() {
@@ -2598,28 +3917,34 @@ public final class MainActivity extends Activity {
         root.put("speaker_names", names);
         root.put("speaker_colors", colors);
         root.put("segments", segments);
+        if (currentQualityInfoJson != null) root.put("quality_info", new JSONObject(currentQualityInfoJson));
+        if (currentTimingJson != null) root.put("timing", new JSONObject(currentTimingJson));
+        if (currentAudioSummaryJson != null) root.put("audio_summary", new JSONArray(currentAudioSummaryJson));
         return root.toString();
     }
 
     private void copyTranscript() {
-        if (currentTranscriptText == null || currentTranscriptText.trim().isEmpty()) {
+        String text = formattedTranscriptText();
+        if (text == null || text.trim().isEmpty()) {
             appendLog("Chưa có văn bản để sao chép.");
             return;
         }
         ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (clipboard != null) {
-            clipboard.setPrimaryClip(ClipData.newPlainText("ASR transcript", currentTranscriptText));
+            clipboard.setPrimaryClip(ClipData.newPlainText("ASR transcript", text));
             appendLog("Đã sao chép văn bản.");
         }
     }
 
     private void setProgress(String phase, int percent) {
+        int clipped = Math.max(0, Math.min(100, percent));
         if (progressContainer != null) {
-            progressContainer.setVisibility(percent >= 100 ? View.GONE : View.VISIBLE);
+            progressContainer.setVisibility(clipped >= 100 ? View.GONE : View.VISIBLE);
         }
-        progressBar.setProgress(Math.max(0, Math.min(100, percent)));
+        if (cancelProcessingButton != null) cancelProcessingButton.setVisibility(clipped >= 100 ? View.GONE : View.VISIBLE);
+        progressBar.setProgress(clipped);
         stageView.setText(phase);
-        progressText.setText(Math.max(0, Math.min(100, percent)) + "%");
+        progressText.setText(clipped + "%");
     }
 
     private void appendLog(String line) {

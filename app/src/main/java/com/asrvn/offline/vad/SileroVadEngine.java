@@ -4,6 +4,12 @@ import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
 
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.LongBuffer;
 import java.util.ArrayList;
@@ -63,6 +69,34 @@ public final class SileroVadEngine implements AutoCloseable {
         return new VadResult(segments, first.probabilities, false);
     }
 
+    public VadResult run(File pcmFloatFile, int sampleCount, boolean bypass) throws Exception {
+        if (bypass) {
+            List<SpeechSegment> all = new ArrayList<>();
+            all.add(new SpeechSegment(0, sampleCount));
+            return new VadResult(all, new float[0], true);
+        }
+        if (sampleCount < WINDOW_SIZE) {
+            List<SpeechSegment> all = new ArrayList<>();
+            all.add(new SpeechSegment(0, sampleCount));
+            return new VadResult(all, new float[0], false);
+        }
+        float max = maxAbs(pcmFloatFile);
+        float scale = max > 1e-6f && max < VAD_BOOST_TARGET ? VAD_BOOST_TARGET / max : 1.0f;
+        InferenceResult first = runInference(pcmFloatFile, sampleCount, scale);
+        List<SpeechSegment> segments = toSegments(first.probabilities, sampleCount, 0.2f, 100, 250, 1000, 250);
+        if (segments.isEmpty()) {
+            InferenceResult retry = runInference(pcmFloatFile, sampleCount, scale);
+            segments = toSegments(retry.probabilities, sampleCount, 0.3f, 100, 150, 1000, 250);
+            if (!segments.isEmpty()) return new VadResult(segments, retry.probabilities, false);
+        }
+        if (segments.isEmpty()) {
+            List<SpeechSegment> all = new ArrayList<>();
+            all.add(new SpeechSegment(0, sampleCount));
+            return new VadResult(all, first.probabilities, false);
+        }
+        return new VadResult(segments, first.probabilities, false);
+    }
+
     private InferenceResult runInference(float[] audio) throws Exception {
         int windows = audio.length / WINDOW_SIZE;
         float[] input = new float[CONTEXT_SIZE + WINDOW_SIZE];
@@ -90,6 +124,39 @@ public final class SileroVadEngine implements AutoCloseable {
         return new InferenceResult(probabilities);
     }
 
+    private InferenceResult runInference(File pcmFloatFile, int sampleCount, float scale) throws Exception {
+        int windows = sampleCount / WINDOW_SIZE;
+        float[] input = new float[CONTEXT_SIZE + WINDOW_SIZE];
+        float[] state = new float[2 * 1 * 128];
+        float[] context = new float[CONTEXT_SIZE];
+        float[] probabilities = new float[windows];
+        float[] window = new float[WINDOW_SIZE];
+        byte[] raw = new byte[WINDOW_SIZE * 4];
+
+        try (DataInputStream stream = new DataInputStream(new BufferedInputStream(new FileInputStream(pcmFloatFile), raw.length * 8));
+             OnnxTensor sr = OnnxTensor.createTensor(env, LongBuffer.wrap(new long[] {SAMPLE_RATE}), new long[] {})) {
+            for (int i = 0; i < windows; i++) {
+                stream.readFully(raw, 0, raw.length);
+                ByteBuffer bytes = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
+                for (int s = 0; s < WINDOW_SIZE; s++) window[s] = bytes.getFloat() * scale;
+
+                System.arraycopy(context, 0, input, 0, CONTEXT_SIZE);
+                System.arraycopy(window, 0, input, CONTEXT_SIZE, WINDOW_SIZE);
+                try (OnnxTensor inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(input), new long[] {1, input.length});
+                     OnnxTensor stateTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(state), new long[] {2, 1, 128});
+                     OrtSession.Result outputs = session.run(feed(inputTensor, stateTensor, sr))) {
+                    OnnxTensor prob = (OnnxTensor) outputs.get("output").orElse(outputs.get(outputNames.get(0)).orElseThrow());
+                    OnnxTensor nextState = (OnnxTensor) outputs.get("stateN").orElse(outputs.get(outputNames.get(1)).orElseThrow());
+                    probabilities[i] = prob.getFloatBuffer().get(0);
+                    nextState.getFloatBuffer().get(state);
+                }
+                System.arraycopy(window, WINDOW_SIZE - CONTEXT_SIZE, context, 0, CONTEXT_SIZE);
+            }
+        }
+
+        return new InferenceResult(probabilities);
+    }
+
     private Map<String, OnnxTensor> feed(OnnxTensor input, OnnxTensor state, OnnxTensor sr) {
         Map<String, OnnxTensor> feeds = new HashMap<>();
         feeds.put("input", input);
@@ -109,6 +176,24 @@ public final class SileroVadEngine implements AutoCloseable {
         float[] boosted = new float[audio.length];
         for (int i = 0; i < audio.length; i++) boosted[i] = audio[i] * scale;
         return boosted;
+    }
+
+    private float maxAbs(File pcmFloatFile) throws Exception {
+        float max = 0.0f;
+        byte[] raw = new byte[1024 * 1024];
+        try (DataInputStream input = new DataInputStream(new BufferedInputStream(new FileInputStream(pcmFloatFile), raw.length))) {
+            long remaining = pcmFloatFile.length() - (pcmFloatFile.length() % 4L);
+            while (remaining > 0) {
+                int read = (int) Math.min(raw.length, remaining);
+                input.readFully(raw, 0, read);
+                ByteBuffer bytes = ByteBuffer.wrap(raw, 0, read).order(ByteOrder.LITTLE_ENDIAN);
+                for (int i = 0; i < read / 4; i++) {
+                    max = Math.max(max, Math.abs(bytes.getFloat()));
+                }
+                remaining -= read;
+            }
+        }
+        return max;
     }
 
     private List<SpeechSegment> toSegments(float[] probabilities, int totalSamples, float threshold, int minSilenceMs, int minSpeechMs, int paddingMs, int mergeGapMs) {

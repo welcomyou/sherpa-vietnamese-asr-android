@@ -90,6 +90,7 @@ If you already have the desktop/PWA checkout with models populated, reuse it:
 Prerequisites:
 
 - Android Studio or Android SDK installed.
+- Java 17. Android Studio's bundled JBR works locally, and GitHub Actions uses Temurin 17.
 - SDK path in `local.properties`. You can copy `local.properties.example` and edit it:
 
 ```properties
@@ -111,6 +112,22 @@ Output:
 ```text
 app\build\outputs\apk\debug\app-debug.apk
 ```
+
+## GitHub Actions APK
+
+The repository includes `.github/workflows/android-apk.yml`.
+
+- Every push or pull request to `main` builds a debug APK and uploads it as a workflow artifact.
+- The default GitHub build is source-only: it verifies the Android project and creates an APK, but it does not bundle large model binaries because they are intentionally ignored by Git.
+- To build a full offline APK on GitHub, run the workflow manually with `bundle_models=true`. Add a repository secret named `HF_TOKEN` first if the selected Hugging Face model files require accepted terms or authentication.
+
+Download the APK from the workflow run's `Artifacts` section:
+
+```text
+asr-vn-android-v0.2.0-debug
+```
+
+For a release APK intended for distribution, add Android signing secrets and a separate signed release workflow. The current workflow produces an installable debug APK for testing.
 
 Clean generated files:
 

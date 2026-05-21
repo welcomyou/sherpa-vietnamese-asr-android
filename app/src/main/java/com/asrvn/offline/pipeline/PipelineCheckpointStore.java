@@ -10,7 +10,9 @@ public final class PipelineCheckpointStore {
     private final File root;
 
     public PipelineCheckpointStore(Context context) {
-        root = new File(context.getApplicationContext().getFilesDir(), "checkpoints");
+        File filesDir = context.getApplicationContext().getFilesDir();
+        deleteRecursively(new File(filesDir, "checkpoints"));
+        root = new File(filesDir, "checkpoints_v2");
         if (!root.exists()) root.mkdirs();
     }
 

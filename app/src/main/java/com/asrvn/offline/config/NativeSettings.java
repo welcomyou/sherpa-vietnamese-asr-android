@@ -56,11 +56,15 @@ public final class NativeSettings {
     }
 
     public int uiTextScalePercent() {
-        return Math.max(100, Math.min(140, prefs.getInt("ui_text_scale", 120)));
+        return clampUiTextScale(prefs.getInt("ui_text_scale", 120));
     }
 
     public void setUiTextScalePercent(int value) {
-        prefs.edit().putInt("ui_text_scale", Math.max(100, Math.min(140, value))).apply();
+        prefs.edit().putInt("ui_text_scale", clampUiTextScale(value)).apply();
+    }
+
+    public static int clampUiTextScale(int value) {
+        return Math.max(100, Math.min(200, value));
     }
 
     public boolean punctuationEnabled() {

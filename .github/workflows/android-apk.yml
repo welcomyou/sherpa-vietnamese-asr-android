@@ -1,0 +1,69 @@
+name: Android APK
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      bundle_models:
+        description: "Download and bundle model files into the APK"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  build-debug-apk:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build packages
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;30.0.14904198" "cmake;3.22.1"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare bundled model assets
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.bundle_models == 'true' }}
+        shell: pwsh
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy scipy
+          ./scripts/sync-models.ps1 -DownloadMissing
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asr-vn-android-v0.2.0-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
