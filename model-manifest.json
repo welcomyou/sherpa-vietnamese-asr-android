@@ -71,8 +71,7 @@
     {
       "id": "vad.silero",
       "target_path": "models/silero-vad/silero_vad_16k_op15.onnx",
-      "repo": "snakers4/silero-vad",
-      "path": "files/silero_vad_16k_op15.onnx",
+      "url": "https://raw.githubusercontent.com/snakers4/silero-vad/980b17e9d56463e51393a8d92ded473f1b17896a/src/silero_vad/data/silero_vad_16k_op15.onnx",
       "bytes": 1289603,
       "license": "See upstream model card",
       "sha256": "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49"
