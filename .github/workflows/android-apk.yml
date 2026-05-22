@@ -7,6 +7,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
   pull_request:
     branches:
       - main
@@ -20,13 +22,26 @@ on:
         options:
           - "false"
           - "true"
+      create_release:
+        description: "Create or update a GitHub Release with the APK built by this workflow"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      release_tag:
+        description: "Release tag to create/update when create_release=true"
+        required: true
+        default: "v0.2.0"
+        type: string
 
 jobs:
   build-debug-apk:
     name: Build debug APK
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Checkout
@@ -52,7 +67,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Prepare bundled model assets
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.bundle_models == 'true' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && (inputs.bundle_models == 'true' || inputs.create_release == 'true')) }}
         shell: pwsh
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -64,9 +79,76 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug
 
+      - name: Prepare release files
+        id: release_files
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.release_tag }}" ]]; then
+            tag="${{ inputs.release_tag }}"
+          else
+            tag="v${version}"
+          fi
+
+          apk_name="sherpa-vietnamese-asr-android-${tag}-debug.apk"
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk "release/${apk_name}"
+          sha256sum "release/${apk_name}" > "release/${apk_name}.sha256"
+
+          {
+            echo "tag=${tag}"
+            echo "apk_name=${apk_name}"
+            echo "apk_path=release/${apk_name}"
+            echo "sha_path=release/${apk_name}.sha256"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Write release notes
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release == 'true') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk_path="${{ steps.release_files.outputs.apk_path }}"
+          sha_path="${{ steps.release_files.outputs.sha_path }}"
+          size_bytes="$(stat -c '%s' "${apk_path}")"
+          sha256="$(cut -d ' ' -f 1 "${sha_path}")"
+          cat > release/notes.md <<EOF
+          Full offline Android APK with bundled FP32 models, built by GitHub Actions.
+
+          - Commit: ${GITHUB_SHA}
+          - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - APK: ${{ steps.release_files.outputs.apk_name }}
+          - Size: ${size_bytes} bytes
+          - SHA256: ${sha256}
+
+          This APK is debug-signed for direct sideload testing. End users do not need HF_TOKEN for this bundled APK.
+          EOF
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: asr-vn-android-v0.2.0-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: asr-vn-android-${{ steps.release_files.outputs.tag }}-debug
+          path: |
+            ${{ steps.release_files.outputs.apk_path }}
+            ${{ steps.release_files.outputs.sha_path }}
           if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release == 'true') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_files.outputs.tag }}
+          APK_PATH: ${{ steps.release_files.outputs.apk_path }}
+          SHA_PATH: ${{ steps.release_files.outputs.sha_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Sherpa Vietnamese ASR Android ${RELEASE_TAG}"
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" --title "${title}" --notes-file release/notes.md --prerelease
+          else
+            gh release create "${RELEASE_TAG}" --target "${GITHUB_SHA}" --title "${title}" --notes-file release/notes.md --prerelease
+          fi
+          gh release upload "${RELEASE_TAG}" "${APK_PATH}" "${SHA_PATH}" --clobber
